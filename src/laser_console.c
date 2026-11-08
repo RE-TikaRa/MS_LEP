@@ -21,6 +21,7 @@ struct _LaserConsole {
     GtkCheckButton *safety_ack;
     GtkCheckButton *free_mode;
     GtkCheckButton *gui_mode;
+    GtkCheckButton *control_options[5];
     GtkCheckButton *parameter_options[6];
     GtkCheckButton *lock_options[2];
     GtkLabel *connection_label;
@@ -65,6 +66,7 @@ struct _LaserConsole {
     gboolean poll_pending;
     gboolean updating_controls;
     gboolean initialized;
+    gboolean closing;
     gboolean laser_on;
     gboolean red_on;
     gboolean mo_on;
@@ -117,6 +119,9 @@ static void trace_callback(guint16 command, GBytes *transmitted, GBytes *receive
                            const GError *error, gpointer user_data)
 {
     LaserConsole *console = user_data;
+    if (console->closing) {
+        return;
+    }
     gchar *tx = format_bytes(transmitted);
     gchar *rx = format_bytes(received);
     append_log(console, "TX 0x%04X  %s", command, tx);
@@ -152,12 +157,17 @@ static void set_connection_state(LaserConsole *console, const gchar *text, gbool
 static void update_output_buttons(LaserConsole *console)
 {
     gboolean enabled = console->connected && gtk_check_button_get_active(console->safety_ack);
-    gtk_widget_set_sensitive(GTK_WIDGET(console->laser_button), enabled);
+    gboolean gui_mo = (console->telemetry.control_mode & (1u << 0)) != 0;
+    gboolean gui_pa = (console->telemetry.control_mode & (1u << 1)) != 0;
+    gtk_widget_set_sensitive(GTK_WIDGET(console->laser_button), enabled && gui_mo && gui_pa);
     gtk_widget_set_sensitive(GTK_WIDGET(console->red_button), enabled);
-    gtk_widget_set_sensitive(GTK_WIDGET(console->mo_button), enabled);
+    gtk_widget_set_sensitive(GTK_WIDGET(console->mo_button), enabled && gui_mo);
     if (console->free_mode != NULL) {
         gtk_widget_set_sensitive(GTK_WIDGET(console->free_mode), console->connected);
         gtk_widget_set_sensitive(GTK_WIDGET(console->gui_mode), console->connected);
+        for (guint i = 0; i < G_N_ELEMENTS(console->control_options); i++) {
+            gtk_widget_set_sensitive(GTK_WIDGET(console->control_options[i]), console->connected);
+        }
         for (guint i = 0; i < G_N_ELEMENTS(console->parameter_options); i++) {
             gtk_widget_set_sensitive(GTK_WIDGET(console->parameter_options[i]), console->connected);
         }
@@ -167,7 +177,10 @@ static void update_output_buttons(LaserConsole *console)
     }
     if (console->write_buttons != NULL) {
         for (guint i = 0; i < console->write_buttons->len; i++) {
-            gtk_widget_set_sensitive(g_ptr_array_index(console->write_buttons, i), console->connected);
+            GtkWidget *button = g_ptr_array_index(console->write_buttons, i);
+            guint bit = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "control-bit"));
+            gtk_widget_set_sensitive(button, console->connected &&
+                                     (bit == 0 || (console->telemetry.control_mode & (1u << bit))));
         }
     }
     gtk_button_set_label(console->laser_button, console->laser_on ? "关闭激光" : "开启激光");
@@ -282,6 +295,9 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
 static void result_callback(const JptClientResult *result, gpointer user_data)
 {
     LaserConsole *console = user_data;
+    if (console->closing) {
+        return;
+    }
     if (result->type == JPT_CLIENT_CONNECTION) {
         if (result->connected) {
             console->connected = TRUE;
@@ -332,6 +348,10 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             console->updating_controls = TRUE;
             gtk_check_button_set_active(console->gui_mode, result->telemetry.control_mode == 0x1f);
             gtk_check_button_set_active(console->free_mode, result->telemetry.control_mode != 0x1f);
+            for (guint i = 0; i < G_N_ELEMENTS(console->control_options); i++) {
+                gtk_check_button_set_active(console->control_options[i],
+                                            (result->telemetry.control_mode & (1u << i)) != 0);
+            }
             const guint parameter_bits[] = {0, 1, 3, 4, 5, 6};
             for (guint i = 0; i < G_N_ELEMENTS(console->parameter_options); i++) {
                 gtk_check_button_set_active(console->parameter_options[i],
@@ -435,6 +455,11 @@ static void send_u16(LaserConsole *console, guint16 command, guint16 value)
 static void spin_write_clicked(GtkButton *button, gpointer user_data)
 {
     LaserConsole *console = user_data;
+    guint control_bit = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "control-bit"));
+    if (!console->connected || (control_bit != 0 &&
+        !(console->telemetry.control_mode & (1u << control_bit)))) {
+        return;
+    }
     GtkSpinButton *spin = g_object_get_data(G_OBJECT(button), "spin");
     guint command = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "command"));
     guint value = (guint)gtk_spin_button_get_value_as_int(spin);
@@ -451,7 +476,34 @@ static void mode_toggled(GtkCheckButton *button, gpointer user_data)
         return;
     }
     guint16 value = button == console->gui_mode ? 0x1F : 0x00;
+    console->telemetry.control_mode = value;
+    console->updating_controls = TRUE;
+    for (guint i = 0; i < G_N_ELEMENTS(console->control_options); i++) {
+        gtk_check_button_set_active(console->control_options[i], (value & (1u << i)) != 0);
+    }
+    console->updating_controls = FALSE;
     send_u16(console, JPT_CMD_CONTROL_MODE, value);
+    update_output_buttons(console);
+}
+
+static void control_option_toggled(GtkCheckButton *button, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    if (console->updating_controls || !console->connected) {
+        return;
+    }
+    guint bit = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "control-bit"));
+    if (gtk_check_button_get_active(button)) {
+        console->telemetry.control_mode |= (guint16)(1u << bit);
+    } else {
+        console->telemetry.control_mode &= (guint16)~(1u << bit);
+    }
+    console->updating_controls = TRUE;
+    gtk_check_button_set_active(console->gui_mode, FALSE);
+    gtk_check_button_set_active(console->free_mode, TRUE);
+    console->updating_controls = FALSE;
+    send_u16(console, JPT_CMD_CONTROL_MODE, console->telemetry.control_mode);
+    update_output_buttons(console);
 }
 
 static void mask_option_toggled(GtkCheckButton *button, gpointer user_data)
@@ -569,17 +621,28 @@ static GtkWidget *make_metric(const gchar *title, GtkLabel **value)
 }
 
 static void add_spin_setting(GtkWidget *box, const gchar *title, GtkSpinButton *spin,
-                             guint command, LaserConsole *console)
+                             guint command, guint control_bit, LaserConsole *console)
 {
     GtkWidget *button = gtk_button_new_with_label("写入");
     gtk_widget_add_css_class(button, "compact-button");
     g_object_set_data(G_OBJECT(button), "spin", spin);
     g_object_set_data(G_OBJECT(button), "command", GUINT_TO_POINTER(command));
+    g_object_set_data(G_OBJECT(button), "control-bit", GUINT_TO_POINTER(control_bit));
     g_signal_connect(button, "clicked", G_CALLBACK(spin_write_clicked), console);
     if (console->write_buttons != NULL) {
         g_ptr_array_add(console->write_buttons, button);
     }
     gtk_box_append(GTK_BOX(box), make_value_row(title, GTK_WIDGET(spin), button));
+}
+
+static GtkCheckButton *add_control_option(GtkWidget *grid, const gchar *title, guint column, guint row,
+                                          guint bit, LaserConsole *console)
+{
+    GtkCheckButton *button = GTK_CHECK_BUTTON(gtk_check_button_new_with_label(title));
+    g_object_set_data(G_OBJECT(button), "control-bit", GUINT_TO_POINTER(bit));
+    g_signal_connect(button, "toggled", G_CALLBACK(control_option_toggled), console);
+    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(button), column, row, 1, 1);
+    return button;
 }
 
 static GtkCheckButton *add_mask_option(GtkWidget *grid, const gchar *title, guint column, guint row,
@@ -623,10 +686,10 @@ static GtkWidget *build_control_page(LaserConsole *console)
     console->frequency_spin = make_spin(1, 4000, 1, 100);
     console->pulse_spin = make_spin(1, 500, 1, 20);
     console->simmer_spin = make_spin(0, 1000, 1, 0);
-    add_spin_setting(parameter_box, "功率 (%)", console->power_spin, JPT_CMD_POWER, console);
-    add_spin_setting(parameter_box, "频率 (kHz)", console->frequency_spin, JPT_CMD_FREQUENCY, console);
-    add_spin_setting(parameter_box, "脉宽 (ns)", console->pulse_spin, JPT_CMD_PULSE_WIDTH, console);
-    add_spin_setting(parameter_box, "Simmer", console->simmer_spin, JPT_CMD_SIMMER, console);
+    add_spin_setting(parameter_box, "功率 (%)", console->power_spin, JPT_CMD_POWER, 5, console);
+    add_spin_setting(parameter_box, "频率 (kHz)", console->frequency_spin, JPT_CMD_FREQUENCY, 4, console);
+    add_spin_setting(parameter_box, "脉宽 (ns)", console->pulse_spin, JPT_CMD_PULSE_WIDTH, 3, console);
+    add_spin_setting(parameter_box, "Simmer", console->simmer_spin, JPT_CMD_SIMMER, 0, console);
     gtk_box_append(GTK_BOX(page), parameter_card);
 
     GtkWidget *output_box;
@@ -657,6 +720,18 @@ static GtkWidget *build_control_page(LaserConsole *console)
     gtk_box_append(GTK_BOX(output_box), button_row);
     gtk_box_append(GTK_BOX(page), output_card);
 
+    GtkWidget *control_box;
+    GtkWidget *control_card = make_card("控制来源", &control_box);
+    GtkWidget *control_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(control_grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(control_grid), 18);
+    const gchar *control_names[] = {"GUI MO", "GUI PA", "GUI 脉宽", "GUI 频率", "GUI 功率"};
+    for (guint i = 0; i < G_N_ELEMENTS(control_names); i++) {
+        console->control_options[i] = add_control_option(control_grid, control_names[i], i, 0, i, console);
+    }
+    gtk_box_append(GTK_BOX(control_box), control_grid);
+    gtk_box_append(GTK_BOX(page), control_card);
+
     GtkWidget *options_box;
     GtkWidget *options_card = make_card("控制与锁定选项", &options_box);
     GtkWidget *options_grid = gtk_grid_new();
@@ -686,11 +761,11 @@ static GtkWidget *build_control_page(LaserConsole *console)
     console->default_simmer_spin = make_spin(0, 1000, 1, 0);
     console->lock_power_spin = make_spin(0, 100, 1, 0);
     console->red_power_spin = make_spin(0, 100, 1, 0);
-    add_spin_setting(default_box, "锁定频率 (kHz)", console->default_frequency_spin, JPT_CMD_LOCK_FREQUENCY, console);
-    add_spin_setting(default_box, "默认脉宽 (ns)", console->default_pulse_spin, JPT_CMD_DEFAULT_PULSE_WIDTH, console);
-    add_spin_setting(default_box, "默认 Simmer", console->default_simmer_spin, JPT_CMD_DEFAULT_SIMMER, console);
-    add_spin_setting(default_box, "锁定功率 (%)", console->lock_power_spin, JPT_CMD_LOCK_POWER, console);
-    add_spin_setting(default_box, "红光功率 (%)", console->red_power_spin, JPT_CMD_RED_LIGHT_POWER, console);
+    add_spin_setting(default_box, "锁定频率 (kHz)", console->default_frequency_spin, JPT_CMD_LOCK_FREQUENCY, 0, console);
+    add_spin_setting(default_box, "默认脉宽 (ns)", console->default_pulse_spin, JPT_CMD_DEFAULT_PULSE_WIDTH, 0, console);
+    add_spin_setting(default_box, "默认 Simmer", console->default_simmer_spin, JPT_CMD_DEFAULT_SIMMER, 0, console);
+    add_spin_setting(default_box, "锁定功率 (%)", console->lock_power_spin, JPT_CMD_LOCK_POWER, 0, console);
+    add_spin_setting(default_box, "红光功率 (%)", console->red_power_spin, JPT_CMD_RED_LIGHT_POWER, 0, console);
     gtk_box_append(GTK_BOX(page), default_card);
 
     update_output_buttons(console);
@@ -825,6 +900,7 @@ static gboolean window_close_request(GtkWindow *window, gpointer user_data)
         g_source_remove(console->poll_source);
         console->poll_source = 0;
     }
+    console->closing = TRUE;
     jpt_client_free(console->client);
     g_ptr_array_unref(console->write_buttons);
     g_free(console);
