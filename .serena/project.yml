@@ -1,0 +1,26 @@
+project_name: "MS_LEP"
+language_servers:
+- cpp
+encoding: "utf-8"
+activation_command:
+activation_command_timeout: 180.0
+line_ending:
+language_backend:
+ignore_all_files_in_gitignore: true
+ls_specific_settings: {}
+ls_workspace_folders:
+- "."
+ls_additional_workspace_folders: []
+ignored_paths:
+- "build/**"
+- "dist/**"
+read_only: false
+excluded_tools: []
+included_optional_tools: []
+fixed_tools: []
+default_modes:
+added_modes:
+initial_prompt: "MS_LEP is a Linux GTK4 C application for JPT YDFLP-E3-100-M7 laser diagnostics. Keep protocol framing independent from the UI and preserve the documented hardware safety boundary."
+symbol_info_budget:
+read_only_memory_patterns: []
+ignored_memory_patterns: []
