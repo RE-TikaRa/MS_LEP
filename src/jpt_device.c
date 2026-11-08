@@ -73,3 +73,18 @@ gboolean jpt_device_decode_alarm_counts(const JptFrame *frame, JptTelemetry *tel
     }
     return TRUE;
 }
+
+void jpt_device_decode_status(guint16 status, JptTelemetry *telemetry)
+{
+    telemetry->status = status;
+    telemetry->pa_enabled = (status & (1u << 0)) != 0;
+    telemetry->mo_enabled = (status & (1u << 1)) != 0;
+    telemetry->red_light_enabled = (status & (1u << 2)) != 0;
+    telemetry->pump_enabled = (status & (1u << 3)) != 0;
+    telemetry->db25_power = 0;
+    for (guint bit = 0; bit < 8; bit++) {
+        if (status & (1u << (bit + 4))) {
+            telemetry->db25_power |= (guint8)(1u << (7 - bit));
+        }
+    }
+}

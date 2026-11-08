@@ -51,6 +51,11 @@ typedef struct {
     guint16 real_power_percent;
     guint16 real_pulse_width;
     guint16 real_frequency;
+    guint8 db25_power;
+    gboolean pa_enabled;
+    gboolean mo_enabled;
+    gboolean red_light_enabled;
+    gboolean pump_enabled;
     gdouble sensor_1_celsius;
     gdouble sensor_2_celsius;
     gboolean sensor_1_fault;
@@ -68,5 +73,6 @@ gboolean jpt_device_decode_u16(const JptFrame *frame, guint16 *value, GError **e
 gboolean jpt_device_decode_serial(const JptFrame *frame, gchar *serial, gsize serial_size, GError **error);
 gboolean jpt_device_decode_monitoring(const JptFrame *frame, JptTelemetry *telemetry, GError **error);
 gboolean jpt_device_decode_alarm_counts(const JptFrame *frame, JptTelemetry *telemetry, GError **error);
+void jpt_device_decode_status(guint16 status, JptTelemetry *telemetry);
 
 G_END_DECLS

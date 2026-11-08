@@ -39,8 +39,9 @@ struct _LaserConsole {
     GtkLabel *control_mode_label;
     GtkLabel *status_label;
     GtkLabel *alarm_state_label;
-    GtkLabel *status_indicators[5];
+    GtkLabel *status_indicators[4];
     GtkLabel *power_indicators[8];
+    GtkLabel *external_power_label;
     GtkLabel *alarm_indicators[8];
     GtkLabel *alarm_counts[8];
     GtkTextBuffer *log_buffer;
@@ -196,6 +197,7 @@ static void update_output_buttons(LaserConsole *console)
 static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetry)
 {
     console->telemetry.status = telemetry->status;
+    jpt_device_decode_status(telemetry->status, &console->telemetry);
     console->telemetry.control_mode = telemetry->control_mode;
     console->telemetry.parameter_select = telemetry->parameter_select;
     console->telemetry.lock_options = telemetry->lock_options;
@@ -262,6 +264,10 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     set_indicator(console->status_indicators[1], current->status & (1u << 1), FALSE);
     set_indicator(console->status_indicators[2], current->status & (1u << 2), FALSE);
     set_indicator(console->status_indicators[3], current->status & (1u << 3), FALSE);
+    text = g_strdup_printf("%u / 255  (%.0f%%)", current->db25_power,
+                           (gdouble)current->db25_power * 100.0 / 255.0);
+    gtk_label_set_text(console->external_power_label, text);
+    g_free(text);
     for (guint i = 0; i < G_N_ELEMENTS(console->power_indicators); i++) {
         gboolean active = current->status & (1u << (4 + i));
         gchar *name = g_strdup_printf("D%u  %u", 7 - i, active ? 1 : 0);
@@ -813,7 +819,7 @@ static GtkWidget *build_monitor_page(LaserConsole *console)
     GtkWidget *signal_grid = gtk_grid_new();
     gtk_grid_set_row_spacing(GTK_GRID(signal_grid), 8);
     gtk_grid_set_column_spacing(GTK_GRID(signal_grid), 24);
-    const gchar *signal_names[] = {"PA", "MO", "红光", "泵浦", "DB25 功率"};
+    const gchar *signal_names[] = {"PA", "MO", "红光", "泵浦"};
     for (guint i = 0; i < G_N_ELEMENTS(signal_names); i++) {
         GtkWidget *label = gtk_label_new(signal_names[i]);
         gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
@@ -840,10 +846,15 @@ static GtkWidget *build_monitor_page(LaserConsole *console)
     gtk_box_append(GTK_BOX(signal_box), signal_row);
     GtkWidget *power_grid = gtk_grid_new();
     gtk_grid_set_column_spacing(GTK_GRID(power_grid), 16);
+    GtkWidget *external_power_caption = gtk_label_new("DB25 功率输入");
+    gtk_widget_add_css_class(external_power_caption, "dim-label");
+    gtk_grid_attach(GTK_GRID(power_grid), external_power_caption, 0, 0, 1, 1);
+    console->external_power_label = GTK_LABEL(gtk_label_new("0 / 255  (0%)"));
+    gtk_grid_attach(GTK_GRID(power_grid), GTK_WIDGET(console->external_power_label), 1, 0, 1, 1);
     for (guint i = 0; i < G_N_ELEMENTS(console->power_indicators); i++) {
         console->power_indicators[i] = GTK_LABEL(gtk_label_new("D"));
         gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), "indicator-muted");
-        gtk_grid_attach(GTK_GRID(power_grid), GTK_WIDGET(console->power_indicators[i]), i, 0, 1, 1);
+        gtk_grid_attach(GTK_GRID(power_grid), GTK_WIDGET(console->power_indicators[i]), i + 2, 0, 1, 1);
     }
     gtk_box_append(GTK_BOX(signal_box), power_grid);
     gtk_box_append(GTK_BOX(page), signal_card);

@@ -1,4 +1,4 @@
-#include "jpt_protocol.h"
+#include "jpt_device.h"
 
 #include <glib.h>
 
@@ -75,6 +75,15 @@ static void test_encode_rejects_oversized_payload(void)
     g_clear_error(&error);
 }
 
+static void test_decode_status_db25_power(void)
+{
+    JptTelemetry telemetry = {0};
+    jpt_device_decode_status(0x18, &telemetry);
+    g_assert_true(telemetry.pump_enabled);
+    g_assert_cmpuint(telemetry.db25_power, ==, 0x80);
+    g_assert_cmpfloat_with_epsilon((gdouble)telemetry.db25_power * 100.0 / 255.0, 50.196, 0.001);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -82,5 +91,6 @@ int main(int argc, char **argv)
     g_test_add_func("/protocol/parser/fragmented-sn", test_parser_fragmented_sn_reply);
     g_test_add_func("/protocol/parser/coalesced-frames", test_parser_coalesced_frames_and_noise);
     g_test_add_func("/protocol/encode/oversized-payload", test_encode_rejects_oversized_payload);
+    g_test_add_func("/device/status/db25-power", test_decode_status_db25_power);
     return g_test_run();
 }
