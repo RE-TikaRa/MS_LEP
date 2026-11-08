@@ -144,6 +144,7 @@ static void set_connection_state(LaserConsole *console, const gchar *text, gbool
     gtk_label_set_text(console->connection_label, text);
     gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "state-ok");
     gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "state-error");
+    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "state-muted");
     gtk_widget_add_css_class(GTK_WIDGET(console->connection_label), error ? "state-error" :
                              connected ? "state-ok" : "state-muted");
 }
@@ -157,6 +158,12 @@ static void update_output_buttons(LaserConsole *console)
     if (console->free_mode != NULL) {
         gtk_widget_set_sensitive(GTK_WIDGET(console->free_mode), console->connected);
         gtk_widget_set_sensitive(GTK_WIDGET(console->gui_mode), console->connected);
+        for (guint i = 0; i < G_N_ELEMENTS(console->parameter_options); i++) {
+            gtk_widget_set_sensitive(GTK_WIDGET(console->parameter_options[i]), console->connected);
+        }
+        for (guint i = 0; i < G_N_ELEMENTS(console->lock_options); i++) {
+            gtk_widget_set_sensitive(GTK_WIDGET(console->lock_options[i]), console->connected);
+        }
     }
     if (console->write_buttons != NULL) {
         for (guint i = 0; i < console->write_buttons->len; i++) {
@@ -176,6 +183,14 @@ static void update_output_buttons(LaserConsole *console)
 static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetry)
 {
     console->telemetry.status = telemetry->status;
+    console->telemetry.control_mode = telemetry->control_mode;
+    console->telemetry.parameter_select = telemetry->parameter_select;
+    console->telemetry.lock_options = telemetry->lock_options;
+    console->telemetry.default_simmer = telemetry->default_simmer;
+    console->telemetry.default_pulse_width = telemetry->default_pulse_width;
+    console->telemetry.lock_frequency = telemetry->lock_frequency;
+    console->telemetry.lock_power = telemetry->lock_power;
+    console->telemetry.red_light_power = telemetry->red_light_power;
     console->telemetry.real_power_percent = telemetry->real_power_percent;
     console->telemetry.real_pulse_width = telemetry->real_pulse_width;
     console->telemetry.real_frequency = telemetry->real_frequency;
@@ -273,6 +288,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             gtk_button_set_label(console->connect_button, "断开");
             set_connection_state(console, "已连接", TRUE, FALSE);
             append_log(console, "连接已建立，开始读取设备信息");
+            console->initialized = FALSE;
             jpt_client_read_initial_async(console->client, result_callback, console);
         } else {
             console->connected = FALSE;
@@ -289,6 +305,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
     if (result->type == JPT_CLIENT_DISCONNECTED) {
         console->connected = FALSE;
         console->poll_pending = FALSE;
+        console->initialized = FALSE;
         set_connection_state(console, "未连接", FALSE, FALSE);
         gtk_button_set_label(console->connect_button, "连接");
         update_output_buttons(console);
@@ -303,6 +320,30 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             return;
         }
         update_telemetry(console, &result->telemetry);
+        if (!console->initialized) {
+            gtk_spin_button_set_value(console->default_simmer_spin, result->telemetry.default_simmer);
+            gtk_spin_button_set_value(console->default_pulse_spin, result->telemetry.default_pulse_width);
+            gtk_spin_button_set_value(console->default_frequency_spin, result->telemetry.lock_frequency);
+            gtk_spin_button_set_value(console->lock_power_spin,
+                                      (gdouble)result->telemetry.lock_power * 100.0 / 4095.0);
+            gtk_spin_button_set_value(console->red_power_spin, result->telemetry.red_light_power);
+            gtk_spin_button_set_value(console->frequency_spin, result->telemetry.real_frequency);
+            gtk_spin_button_set_value(console->pulse_spin, result->telemetry.real_pulse_width);
+            console->updating_controls = TRUE;
+            gtk_check_button_set_active(console->gui_mode, result->telemetry.control_mode == 0x1f);
+            gtk_check_button_set_active(console->free_mode, result->telemetry.control_mode != 0x1f);
+            const guint parameter_bits[] = {0, 1, 3, 4, 5, 6};
+            for (guint i = 0; i < G_N_ELEMENTS(console->parameter_options); i++) {
+                gtk_check_button_set_active(console->parameter_options[i],
+                                            (result->telemetry.parameter_select & (1u << parameter_bits[i])) != 0);
+            }
+            for (guint i = 0; i < G_N_ELEMENTS(console->lock_options); i++) {
+                gtk_check_button_set_active(console->lock_options[i],
+                                            (result->telemetry.lock_options & (1u << i)) != 0);
+            }
+            console->updating_controls = FALSE;
+            console->initialized = TRUE;
+        }
         if (console->poll_source == 0) {
             console->poll_source = g_timeout_add_seconds(1, poll_tick, console);
         }
@@ -411,6 +452,25 @@ static void mode_toggled(GtkCheckButton *button, gpointer user_data)
     }
     guint16 value = button == console->gui_mode ? 0x1F : 0x00;
     send_u16(console, JPT_CMD_CONTROL_MODE, value);
+}
+
+static void mask_option_toggled(GtkCheckButton *button, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    if (console->updating_controls || !console->connected) {
+        return;
+    }
+
+    guint source = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "mask-source"));
+    guint16 *mask = source == 0 ? &console->telemetry.parameter_select : &console->telemetry.lock_options;
+    guint bit = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "mask-bit"));
+    if (gtk_check_button_get_active(button)) {
+        *mask |= (guint16)(1u << bit);
+    } else {
+        *mask &= (guint16)~(1u << bit);
+    }
+    guint command = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "mask-command"));
+    send_u16(console, (guint16)command, *mask);
 }
 
 static void output_button_clicked(GtkButton *button, gpointer user_data)
@@ -522,6 +582,18 @@ static void add_spin_setting(GtkWidget *box, const gchar *title, GtkSpinButton *
     gtk_box_append(GTK_BOX(box), make_value_row(title, GTK_WIDGET(spin), button));
 }
 
+static GtkCheckButton *add_mask_option(GtkWidget *grid, const gchar *title, guint column, guint row,
+                                       guint command, guint bit, guint source, LaserConsole *console)
+{
+    GtkCheckButton *button = GTK_CHECK_BUTTON(gtk_check_button_new_with_label(title));
+    g_object_set_data(G_OBJECT(button), "mask-command", GUINT_TO_POINTER(command));
+    g_object_set_data(G_OBJECT(button), "mask-bit", GUINT_TO_POINTER(bit));
+    g_object_set_data(G_OBJECT(button), "mask-source", GUINT_TO_POINTER(source));
+    g_signal_connect(button, "toggled", G_CALLBACK(mask_option_toggled), console);
+    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(button), column, row, 1, 1);
+    return button;
+}
+
 static GtkWidget *build_control_page(LaserConsole *console)
 {
     GtkWidget *scroll = gtk_scrolled_window_new();
@@ -584,6 +656,28 @@ static GtkWidget *build_control_page(LaserConsole *console)
     gtk_box_append(GTK_BOX(button_row), GTK_WIDGET(console->mo_button));
     gtk_box_append(GTK_BOX(output_box), button_row);
     gtk_box_append(GTK_BOX(page), output_card);
+
+    GtkWidget *options_box;
+    GtkWidget *options_card = make_card("控制与锁定选项", &options_box);
+    GtkWidget *options_grid = gtk_grid_new();
+    gtk_grid_set_row_spacing(GTK_GRID(options_grid), 8);
+    gtk_grid_set_column_spacing(GTK_GRID(options_grid), 18);
+    const gchar *parameter_names[] = {
+        "Pin9 功率锁存", "Pin23 急停", "外部频率", "风扇调速", "红光模式", "增强模式"
+    };
+    const guint parameter_bits[] = {0, 1, 3, 4, 5, 6};
+    for (guint i = 0; i < G_N_ELEMENTS(parameter_names); i++) {
+        console->parameter_options[i] = add_mask_option(options_grid, parameter_names[i],
+                                                         i % 3, i / 3, JPT_CMD_PARAMETER_SELECT,
+                                                         parameter_bits[i], 0, console);
+    }
+    const gchar *lock_names[] = {"锁定频率", "锁定功率"};
+    for (guint i = 0; i < G_N_ELEMENTS(lock_names); i++) {
+        console->lock_options[i] = add_mask_option(options_grid, lock_names[i], i, 2,
+                                                   JPT_CMD_LOCK_PARAMETER, i, 1, console);
+    }
+    gtk_box_append(GTK_BOX(options_box), options_grid);
+    gtk_box_append(GTK_BOX(page), options_card);
 
     GtkWidget *default_box;
     GtkWidget *default_card = make_card("默认参数", &default_box);
