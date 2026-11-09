@@ -32,11 +32,28 @@ option(MS_LEP_BUILD_GUI "Build the GTK4 application" ON)
 if(MS_LEP_BUILD_GUI)
     pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
     pkg_check_modules(ADW REQUIRED IMPORTED_TARGET libadwaita-1)
+    find_program(GLIB_COMPILE_RESOURCES glib-compile-resources REQUIRED)
+
+    set(MS_LEP_RESOURCE_FILE ${CMAKE_CURRENT_BINARY_DIR}/ms_lep.gresource)
+    add_custom_command(
+        OUTPUT ${MS_LEP_RESOURCE_FILE}
+        COMMAND ${GLIB_COMPILE_RESOURCES}
+                --generate
+                --target=${MS_LEP_RESOURCE_FILE}
+                --sourcedir=${CMAKE_CURRENT_SOURCE_DIR}/data
+                ${CMAKE_CURRENT_SOURCE_DIR}/data/ms_lep.gresource.xml
+        DEPENDS
+            data/ms_lep.gresource.xml
+            data/laser-device.png
+        VERBATIM
+    )
+    add_custom_target(ms_lep_resources DEPENDS ${MS_LEP_RESOURCE_FILE})
 
     add_executable(ms_lep
         src/main.c
         src/laser_console.c
     )
+    add_dependencies(ms_lep ms_lep_resources)
     target_link_libraries(ms_lep PRIVATE ms_lep_core PkgConfig::GTK4 PkgConfig::ADW)
     target_compile_definitions(ms_lep PRIVATE MS_LEP_VERSION="${PROJECT_VERSION}")
     target_compile_options(ms_lep PRIVATE
@@ -57,4 +74,5 @@ endif()
 
 if(MS_LEP_BUILD_GUI)
     install(TARGETS ms_lep RUNTIME DESTINATION bin)
+    install(FILES ${MS_LEP_RESOURCE_FILE} DESTINATION bin)
 endif()

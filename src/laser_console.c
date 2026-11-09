@@ -23,6 +23,8 @@ struct _LaserConsole {
     AdwViewStack *view_stack;
     AdwViewSwitcherBar *view_switcher_bar;
     GtkWidget *connection_page;
+    GtkBox *connection_split_box;
+    GtkPicture *device_picture;
     GtkImage *connection_icon;
     GtkLabel *connection_title;
     GtkLabel *connection_description;
@@ -436,24 +438,39 @@ static void serial_settings_changed(GObject *object, GParamSpec *pspec, gpointer
 
 static void build_connection_page(LaserConsole *console)
 {
-    GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 24);
-    gtk_widget_set_hexpand(content, TRUE);
-    GtkWidget *intro = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 12);
+    GtkWidget *visual_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    gtk_widget_set_vexpand(visual_panel, FALSE);
+    gtk_widget_set_valign(visual_panel, GTK_ALIGN_CENTER);
+    gtk_widget_set_halign(visual_panel, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_start(visual_panel, 32);
+    gtk_widget_set_margin_end(visual_panel, 32);
+    console->device_picture = GTK_PICTURE(gtk_picture_new_for_resource(
+        "/com/tikara/mslep/laser-device.png"));
+    gtk_picture_set_content_fit(console->device_picture, GTK_CONTENT_FIT_CONTAIN);
+    gtk_picture_set_can_shrink(console->device_picture, TRUE);
+    gtk_picture_set_alternative_text(console->device_picture, "YDFLP-E3-100-M7 脉冲光纤激光器");
+    gtk_widget_set_size_request(GTK_WIDGET(console->device_picture), 260, 160);
+    gtk_widget_set_halign(GTK_WIDGET(console->device_picture), GTK_ALIGN_CENTER);
     console->connection_icon = GTK_IMAGE(gtk_image_new_from_icon_name("network-offline-symbolic"));
-    gtk_image_set_pixel_size(console->connection_icon, 36);
+    gtk_image_set_pixel_size(console->connection_icon, 24);
     gtk_widget_add_css_class(GTK_WIDGET(console->connection_icon), "dim-label");
-    console->connection_title = GTK_LABEL(gtk_label_new("连接激光器"));
-    gtk_widget_add_css_class(GTK_WIDGET(console->connection_title), "title-1");
-    gtk_label_set_xalign(console->connection_title, 0.0f);
-    console->connection_description = GTK_LABEL(gtk_label_new("选择连接方式并填写设备信息。"));
+    gtk_widget_set_halign(GTK_WIDGET(console->connection_icon), GTK_ALIGN_CENTER);
+    console->connection_title = GTK_LABEL(gtk_label_new("YDFLP-E3-100-M7"));
+    gtk_widget_add_css_class(GTK_WIDGET(console->connection_title), "title-2");
+    gtk_label_set_xalign(console->connection_title, 0.5f);
+    gtk_widget_set_halign(GTK_WIDGET(console->connection_title), GTK_ALIGN_CENTER);
+    console->connection_description = GTK_LABEL(gtk_label_new("MOPA 脉冲光纤激光器"));
     gtk_widget_add_css_class(GTK_WIDGET(console->connection_description), "dim-label");
-    gtk_label_set_xalign(console->connection_description, 0.0f);
+    gtk_label_set_xalign(console->connection_description, 0.5f);
     gtk_label_set_wrap(console->connection_description, TRUE);
-    GtkWidget *intro_text = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
-    gtk_box_append(GTK_BOX(intro_text), GTK_WIDGET(console->connection_title));
-    gtk_box_append(GTK_BOX(intro_text), GTK_WIDGET(console->connection_description));
-    gtk_box_append(GTK_BOX(intro), GTK_WIDGET(console->connection_icon));
-    gtk_box_append(GTK_BOX(intro), intro_text);
+    gtk_label_set_justify(console->connection_description, GTK_JUSTIFY_CENTER);
+    gtk_label_set_max_width_chars(console->connection_description, 26);
+    gtk_widget_set_halign(GTK_WIDGET(console->connection_description), GTK_ALIGN_CENTER);
+    gtk_widget_set_visible(GTK_WIDGET(console->connection_icon), FALSE);
+    gtk_box_append(GTK_BOX(visual_panel), GTK_WIDGET(console->device_picture));
+    gtk_box_append(GTK_BOX(visual_panel), GTK_WIDGET(console->connection_icon));
+    gtk_box_append(GTK_BOX(visual_panel), GTK_WIDGET(console->connection_title));
+    gtk_box_append(GTK_BOX(visual_panel), GTK_WIDGET(console->connection_description));
 
     AdwPreferencesGroup *connection_group = make_group("设备连接");
     gtk_widget_set_hexpand(GTK_WIDGET(connection_group), TRUE);
@@ -501,16 +518,35 @@ static void build_connection_page(LaserConsole *console)
     refresh_serial_ports(console);
     update_transport_controls(console);
 
-    gtk_box_append(GTK_BOX(content), intro);
-    gtk_box_append(GTK_BOX(content), GTK_WIDGET(connection_group));
+    GtkWidget *form_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    gtk_widget_set_hexpand(form_panel, TRUE);
+    gtk_widget_set_vexpand(form_panel, FALSE);
+    gtk_widget_set_valign(form_panel, GTK_ALIGN_CENTER);
+    gtk_widget_set_margin_start(form_panel, 28);
+    gtk_widget_set_margin_end(form_panel, 28);
+    gtk_widget_set_margin_top(form_panel, 24);
+    gtk_widget_set_margin_bottom(form_panel, 24);
+    gtk_box_append(GTK_BOX(form_panel), GTK_WIDGET(connection_group));
+
+    gtk_widget_add_css_class(visual_panel, "card");
+    gtk_widget_set_size_request(visual_panel, 320, -1);
+    gtk_widget_set_size_request(form_panel, 500, -1);
+    console->connection_split_box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 28));
+    gtk_widget_set_hexpand(GTK_WIDGET(console->connection_split_box), TRUE);
+    gtk_box_append(console->connection_split_box, visual_panel);
+    gtk_box_append(console->connection_split_box, form_panel);
+
     AdwClamp *clamp = ADW_CLAMP(adw_clamp_new());
     adw_clamp_set_maximum_size(clamp, 1120);
-    adw_clamp_set_child(clamp, content);
+    adw_clamp_set_child(clamp, GTK_WIDGET(console->connection_split_box));
     gtk_widget_set_hexpand(GTK_WIDGET(clamp), TRUE);
+    gtk_widget_set_vexpand(GTK_WIDGET(clamp), FALSE);
     gtk_widget_set_halign(GTK_WIDGET(clamp), GTK_ALIGN_FILL);
     gtk_widget_set_valign(GTK_WIDGET(clamp), GTK_ALIGN_CENTER);
     gtk_widget_set_margin_start(GTK_WIDGET(clamp), 24);
     gtk_widget_set_margin_end(GTK_WIDGET(clamp), 24);
+    gtk_widget_set_margin_top(GTK_WIDGET(clamp), 24);
+    gtk_widget_set_margin_bottom(GTK_WIDGET(clamp), 24);
     GtkCenterBox *center_box = GTK_CENTER_BOX(gtk_center_box_new());
     gtk_widget_set_hexpand(GTK_WIDGET(center_box), TRUE);
     gtk_widget_set_vexpand(GTK_WIDGET(center_box), TRUE);
@@ -548,6 +584,7 @@ static void show_connection_page(LaserConsole *console, const gchar *title,
     gtk_label_set_text(console->connection_title, title);
     gtk_label_set_text(console->connection_description, description);
     gtk_image_set_from_icon_name(console->connection_icon, icon_name);
+    gtk_widget_set_visible(GTK_WIDGET(console->connection_icon), TRUE);
     adw_view_switcher_bar_set_reveal(console->view_switcher_bar, FALSE);
     gtk_stack_set_visible_child_name(console->main_stack, "connection");
 }
@@ -1562,6 +1599,16 @@ GtkWidget *laser_console_create(AdwApplication *application)
     gtk_stack_add_named(console->main_stack, root, "workbench");
     adw_toolbar_view_set_content(toolbar_view, GTK_WIDGET(console->main_stack));
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), GTK_WIDGET(toolbar_view));
+    AdwBreakpointCondition *condition = adw_breakpoint_condition_new_length(
+        ADW_BREAKPOINT_CONDITION_MAX_WIDTH, 760, ADW_LENGTH_UNIT_SP);
+    AdwBreakpoint *breakpoint = adw_breakpoint_new(condition);
+    GValue orientation = G_VALUE_INIT;
+    g_value_init(&orientation, GTK_TYPE_ORIENTATION);
+    g_value_set_enum(&orientation, GTK_ORIENTATION_VERTICAL);
+    adw_breakpoint_add_setter(breakpoint, G_OBJECT(console->connection_split_box),
+                              "orientation", &orientation);
+    adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(window), breakpoint);
+    g_value_unset(&orientation);
     adw_view_switcher_bar_set_reveal(console->view_switcher_bar, FALSE);
     set_connection_state(console, "未连接", FALSE, FALSE);
     update_device_status(console);
