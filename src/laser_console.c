@@ -506,9 +506,8 @@ static void build_connection_page(LaserConsole *console)
     AdwClamp *clamp = ADW_CLAMP(adw_clamp_new());
     adw_clamp_set_maximum_size(clamp, 1120);
     adw_clamp_set_child(clamp, content);
-    gtk_widget_set_size_request(GTK_WIDGET(clamp), 1040, -1);
     gtk_widget_set_hexpand(GTK_WIDGET(clamp), TRUE);
-    gtk_widget_set_halign(GTK_WIDGET(clamp), GTK_ALIGN_CENTER);
+    gtk_widget_set_halign(GTK_WIDGET(clamp), GTK_ALIGN_FILL);
     gtk_widget_set_valign(GTK_WIDGET(clamp), GTK_ALIGN_CENTER);
     gtk_widget_set_margin_start(GTK_WIDGET(clamp), 24);
     gtk_widget_set_margin_end(GTK_WIDGET(clamp), 24);
