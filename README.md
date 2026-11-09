@@ -55,7 +55,7 @@ Ubuntu 24.04：
 
 ```bash
 sudo apt-get update
-sudo apt-get install build-essential cmake pkg-config libgtk-4-dev libadwaita-1-dev
+sudo apt-get install build-essential cmake pkg-config libgtk-4-dev libadwaita-1-dev fonts-noto-cjk
 cmake -S . -B build-linux -DMS_LEP_BUILD_GUI=ON -DCMAKE_BUILD_TYPE=Release -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
 cmake --build build-linux -j2
 ctest --test-dir build-linux --output-on-failure

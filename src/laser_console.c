@@ -137,22 +137,22 @@ static void trace_callback(guint16 command, GBytes *transmitted, GBytes *receive
 
 static void set_indicator(GtkLabel *label, gboolean active, gboolean alarm)
 {
-    gtk_widget_remove_css_class(GTK_WIDGET(label), "indicator-ok");
-    gtk_widget_remove_css_class(GTK_WIDGET(label), "indicator-alarm");
-    gtk_widget_remove_css_class(GTK_WIDGET(label), "indicator-muted");
-    gtk_widget_add_css_class(GTK_WIDGET(label), alarm ? "indicator-alarm" :
-                             active ? "indicator-ok" : "indicator-muted");
+    gtk_widget_remove_css_class(GTK_WIDGET(label), "success");
+    gtk_widget_remove_css_class(GTK_WIDGET(label), "error");
+    gtk_widget_remove_css_class(GTK_WIDGET(label), "dim-label");
+    gtk_widget_add_css_class(GTK_WIDGET(label), alarm ? "error" :
+                             active ? "success" : "dim-label");
     gtk_label_set_text(label, alarm ? "报警" : active ? "正常" : "关闭");
 }
 
 static void set_connection_state(LaserConsole *console, const gchar *text, gboolean connected, gboolean error)
 {
     gtk_label_set_text(console->connection_label, text);
-    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "state-ok");
-    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "state-error");
-    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "state-muted");
-    gtk_widget_add_css_class(GTK_WIDGET(console->connection_label), error ? "state-error" :
-                             connected ? "state-ok" : "state-muted");
+    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "success");
+    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "error");
+    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "dim-label");
+    gtk_widget_add_css_class(GTK_WIDGET(console->connection_label), error ? "error" :
+                             connected ? "success" : "dim-label");
 }
 
 static void update_output_buttons(LaserConsole *console)
@@ -188,9 +188,9 @@ static void update_output_buttons(LaserConsole *console)
     gtk_button_set_label(console->red_button, console->red_on ? "关闭红光" : "开启红光");
     gtk_button_set_label(console->mo_button, console->mo_on ? "关闭 MO" : "开启 MO");
     if (console->laser_on) {
-        gtk_widget_add_css_class(GTK_WIDGET(console->laser_button), "danger-active");
+        gtk_widget_add_css_class(GTK_WIDGET(console->laser_button), "destructive-action");
     } else {
-        gtk_widget_remove_css_class(GTK_WIDGET(console->laser_button), "danger-active");
+        gtk_widget_remove_css_class(GTK_WIDGET(console->laser_button), "destructive-action");
     }
 }
 
@@ -272,9 +272,9 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
         gboolean active = current->status & (1u << (4 + i));
         gchar *name = g_strdup_printf("D%u  %u", 7 - i, active ? 1 : 0);
         gtk_label_set_text(console->power_indicators[i], name);
-        gtk_widget_remove_css_class(GTK_WIDGET(console->power_indicators[i]), "indicator-ok");
-        gtk_widget_remove_css_class(GTK_WIDGET(console->power_indicators[i]), "indicator-muted");
-        gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), active ? "indicator-ok" : "indicator-muted");
+        gtk_widget_remove_css_class(GTK_WIDGET(console->power_indicators[i]), "success");
+        gtk_widget_remove_css_class(GTK_WIDGET(console->power_indicators[i]), "dim-label");
+        gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), active ? "success" : "dim-label");
         g_free(name);
     }
 
@@ -679,7 +679,7 @@ static GtkWidget *build_control_page(LaserConsole *console)
     GtkWidget *warning = gtk_label_new("1064 nm 为不可见 IV 级激光。确认防护区域、联锁和护目镜状态后，才启用输出按钮。即使设为 0%，输出端仍可能有约 100 mW 激光。");
     gtk_label_set_wrap(GTK_LABEL(warning), TRUE);
     gtk_label_set_xalign(GTK_LABEL(warning), 0.0f);
-    gtk_widget_add_css_class(warning, "warning-text");
+    gtk_widget_add_css_class(warning, "warning");
     gtk_box_append(GTK_BOX(safety_box), warning);
     console->safety_ack = GTK_CHECK_BUTTON(gtk_check_button_new_with_label("已确认防护区域和联锁状态"));
     gtk_box_append(GTK_BOX(safety_box), GTK_WIDGET(console->safety_ack));
@@ -714,9 +714,9 @@ static GtkWidget *build_control_page(LaserConsole *console)
     console->laser_button = GTK_BUTTON(gtk_button_new_with_label("开启激光"));
     console->red_button = GTK_BUTTON(gtk_button_new_with_label("开启红光"));
     console->mo_button = GTK_BUTTON(gtk_button_new_with_label("开启 MO"));
-    gtk_widget_add_css_class(GTK_WIDGET(console->laser_button), "primary-button");
-    gtk_widget_add_css_class(GTK_WIDGET(console->red_button), "secondary-button");
-    gtk_widget_add_css_class(GTK_WIDGET(console->mo_button), "secondary-button");
+    gtk_widget_add_css_class(GTK_WIDGET(console->laser_button), "suggested-action");
+    gtk_widget_add_css_class(GTK_WIDGET(console->red_button), "flat");
+    gtk_widget_add_css_class(GTK_WIDGET(console->mo_button), "flat");
     g_signal_connect(console->laser_button, "clicked", G_CALLBACK(output_button_clicked), console);
     g_signal_connect(console->red_button, "clicked", G_CALLBACK(output_button_clicked), console);
     g_signal_connect(console->mo_button, "clicked", G_CALLBACK(output_button_clicked), console);
@@ -824,7 +824,7 @@ static GtkWidget *build_monitor_page(LaserConsole *console)
         GtkWidget *label = gtk_label_new(signal_names[i]);
         gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
         console->status_indicators[i] = GTK_LABEL(gtk_label_new("关闭"));
-        gtk_widget_add_css_class(GTK_WIDGET(console->status_indicators[i]), "indicator-muted");
+        gtk_widget_add_css_class(GTK_WIDGET(console->status_indicators[i]), "dim-label");
         gtk_grid_attach(GTK_GRID(signal_grid), label, 0, i, 1, 1);
         gtk_grid_attach(GTK_GRID(signal_grid), GTK_WIDGET(console->status_indicators[i]), 1, i, 1, 1);
     }
@@ -853,7 +853,7 @@ static GtkWidget *build_monitor_page(LaserConsole *console)
     gtk_grid_attach(GTK_GRID(power_grid), GTK_WIDGET(console->external_power_label), 1, 0, 1, 1);
     for (guint i = 0; i < G_N_ELEMENTS(console->power_indicators); i++) {
         console->power_indicators[i] = GTK_LABEL(gtk_label_new("D"));
-        gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), "indicator-muted");
+        gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), "dim-label");
         gtk_grid_attach(GTK_GRID(power_grid), GTK_WIDGET(console->power_indicators[i]), i + 2, 0, 1, 1);
     }
     gtk_box_append(GTK_BOX(signal_box), power_grid);
@@ -871,7 +871,7 @@ static GtkWidget *build_monitor_page(LaserConsole *console)
         gtk_grid_attach(GTK_GRID(alarm_grid), gtk_label_new(alarm_names[i]), 0, i + 1, 1, 1);
         console->alarm_indicators[i] = GTK_LABEL(gtk_label_new("关闭"));
         console->alarm_counts[i] = GTK_LABEL(gtk_label_new("0"));
-        gtk_widget_add_css_class(GTK_WIDGET(console->alarm_indicators[i]), "indicator-muted");
+        gtk_widget_add_css_class(GTK_WIDGET(console->alarm_indicators[i]), "dim-label");
         gtk_grid_attach(GTK_GRID(alarm_grid), GTK_WIDGET(console->alarm_indicators[i]), 1, i + 1, 1, 1);
         gtk_grid_attach(GTK_GRID(alarm_grid), GTK_WIDGET(console->alarm_counts[i]), 2, i + 1, 1, 1);
     }
@@ -924,21 +924,17 @@ static void apply_css(void)
     adw_style_manager_set_color_scheme(style_manager, ADW_COLOR_SCHEME_DEFAULT);
     GtkCssProvider *provider = gtk_css_provider_new();
     gtk_css_provider_load_from_string(provider,
+        "* { font-family: \"Noto Sans CJK SC\", sans-serif; }"
         ".page-title { font-size: 18px; font-weight: 700; }"
-        ".card { background: var(--card-bg-color); border: 1px solid var(--border-color); border-radius: 10px; }"
+        ".card { background: @card_bg_color; border: 1px solid @borders; border-radius: 10px; }"
         ".card-title { font-size: 15px; font-weight: 700; }"
-        ".metric { background: var(--view-bg-color); border: 1px solid var(--border-color); border-radius: 8px; padding: 10px; min-width: 132px; }"
+        ".metric { background: @view_bg_color; border: 1px solid @borders; border-radius: 8px; padding: 10px; min-width: 132px; }"
         ".metric-title { font-size: 12px; }"
-        ".metric-value { color: var(--window-fg-color); font-size: 16px; font-weight: 700; }"
+        ".metric-value { color: @window_fg_color; font-size: 16px; font-weight: 700; }"
         ".value-row { min-height: 34px; }"
         ".compact-button { min-width: 64px; }"
-        ".primary-button { background: var(--accent-bg-color); color: var(--accent-fg-color); }"
-        ".secondary-button { background: var(--view-bg-color); color: var(--window-fg-color); }"
-        ".danger-active { background: var(--error-bg-color); color: var(--error-fg-color); }"
-        ".warning-text { color: var(--warning-fg-color); background: var(--warning-bg-color); padding: 10px; border-radius: 7px; }"
-        ".state-ok, .indicator-ok { color: var(--success-color); font-weight: 700; }"
-        ".state-error, .indicator-alarm { color: var(--error-color); font-weight: 700; }"
-        ".state-muted, .indicator-muted { opacity: var(--dim-opacity); }");
+        ".warning { padding: 10px; border-radius: 7px; }"
+        ".state-muted { opacity: 0.55; }");
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
                                                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(provider);
@@ -987,7 +983,7 @@ GtkWidget *laser_console_create(AdwApplication *application)
     gtk_box_append(GTK_BOX(connection_box), GTK_WIDGET(console->connect_button));
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), connection_box);
     GtkWidget *emergency = gtk_button_new_with_label("紧急关闭");
-    gtk_widget_add_css_class(emergency, "danger-active");
+    gtk_widget_add_css_class(emergency, "destructive-action");
     g_signal_connect(emergency, "clicked", G_CALLBACK(emergency_clicked), console);
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), emergency);
 
