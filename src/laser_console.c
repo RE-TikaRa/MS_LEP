@@ -12,9 +12,15 @@ static gboolean poll_tick(gpointer user_data);
 
 struct _LaserConsole {
     GtkWidget *window;
+    GtkWidget *control_page;
+    GtkWidget *connection_indicator;
+    GtkWidget *device_indicator;
+    GtkWidget *command_indicator;
     GtkDropDown *transport_dropdown;
     GtkEntry *endpoint_entry;
     GtkButton *connect_button;
+    GtkButton *emergency_button;
+    GtkButton *apply_parameters_button;
     GtkButton *laser_button;
     GtkButton *red_button;
     GtkButton *mo_button;
@@ -25,6 +31,7 @@ struct _LaserConsole {
     GtkCheckButton *parameter_options[6];
     GtkCheckButton *lock_options[2];
     GtkLabel *connection_label;
+    GtkLabel *device_status_label;
     GtkLabel *serial_label;
     GtkLabel *serial_status_label;
     GtkLabel *last_command_label;
@@ -64,6 +71,7 @@ struct _LaserConsole {
     guint sample_index;
     guint poll_source;
     gboolean connected;
+    gboolean connection_pending;
     gboolean poll_pending;
     gboolean updating_controls;
     gboolean initialized;
@@ -145,45 +153,94 @@ static void set_indicator(GtkLabel *label, gboolean active, gboolean alarm)
     gtk_label_set_text(label, alarm ? "报警" : active ? "正常" : "关闭");
 }
 
+static void set_status_item(GtkWidget *indicator, GtkLabel *label, const gchar *text,
+                            const gchar *style_class)
+{
+    gtk_widget_remove_css_class(indicator, "success");
+    gtk_widget_remove_css_class(indicator, "warning");
+    gtk_widget_remove_css_class(indicator, "error");
+    gtk_widget_remove_css_class(indicator, "dim-label");
+    gtk_widget_add_css_class(indicator, style_class);
+    gtk_widget_remove_css_class(GTK_WIDGET(label), "success");
+    gtk_widget_remove_css_class(GTK_WIDGET(label), "warning");
+    gtk_widget_remove_css_class(GTK_WIDGET(label), "error");
+    gtk_widget_remove_css_class(GTK_WIDGET(label), "dim-label");
+    gtk_widget_add_css_class(GTK_WIDGET(label), style_class);
+    gtk_label_set_text(label, text);
+}
+
+static GtkWidget *make_status_item(const gchar *text, GtkWidget **indicator, GtkLabel **label)
+{
+    GtkWidget *item = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    *indicator = gtk_image_new_from_icon_name("media-record-symbolic");
+    gtk_image_set_pixel_size(GTK_IMAGE(*indicator), 10);
+    gtk_widget_add_css_class(*indicator, "dim-label");
+    *label = GTK_LABEL(gtk_label_new(text));
+    gtk_box_append(GTK_BOX(item), *indicator);
+    gtk_box_append(GTK_BOX(item), GTK_WIDGET(*label));
+    return item;
+}
+
+static void update_device_status(LaserConsole *console)
+{
+    if (!console->connected) {
+        set_status_item(console->device_indicator, console->device_status_label,
+                        "报警状态未知", "dim-label");
+    } else if (!console->initialized) {
+        set_status_item(console->device_indicator, console->device_status_label,
+                        "正在读取设备", "warning");
+    } else if (console->telemetry.alarm_state != 0) {
+        set_status_item(console->device_indicator, console->device_status_label,
+                        "存在设备报警", "error");
+    } else {
+        set_status_item(console->device_indicator, console->device_status_label,
+                        "无设备报警", "success");
+    }
+}
+
 static void set_connection_state(LaserConsole *console, const gchar *text, gboolean connected, gboolean error)
 {
-    gtk_label_set_text(console->connection_label, text);
-    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "success");
-    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "error");
-    gtk_widget_remove_css_class(GTK_WIDGET(console->connection_label), "dim-label");
-    gtk_widget_add_css_class(GTK_WIDGET(console->connection_label), error ? "error" :
-                             connected ? "success" : "dim-label");
+    const gchar *style_class = error ? "error" : connected ? "success" :
+        g_str_has_prefix(text, "正在") ? "warning" : "error";
+    set_status_item(console->connection_indicator, console->connection_label, text, style_class);
 }
 
 static void update_output_buttons(LaserConsole *console)
 {
-    gboolean enabled = console->connected && gtk_check_button_get_active(console->safety_ack);
+    gboolean ready = console->connected && console->initialized;
+    gboolean enabled = ready && gtk_check_button_get_active(console->safety_ack);
     gboolean gui_mo = (console->telemetry.control_mode & (1u << 0)) != 0;
     gboolean gui_pa = (console->telemetry.control_mode & (1u << 1)) != 0;
+    gtk_widget_set_sensitive(console->control_page, ready);
     gtk_widget_set_sensitive(GTK_WIDGET(console->laser_button), enabled && gui_mo && gui_pa);
     gtk_widget_set_sensitive(GTK_WIDGET(console->red_button), enabled);
     gtk_widget_set_sensitive(GTK_WIDGET(console->mo_button), enabled && gui_mo);
+    gtk_widget_set_sensitive(GTK_WIDGET(console->emergency_button), ready);
+    gtk_widget_set_sensitive(GTK_WIDGET(console->apply_parameters_button), ready);
     if (console->free_mode != NULL) {
-        gtk_widget_set_sensitive(GTK_WIDGET(console->free_mode), console->connected);
-        gtk_widget_set_sensitive(GTK_WIDGET(console->gui_mode), console->connected);
+        gtk_widget_set_sensitive(GTK_WIDGET(console->free_mode), ready);
+        gtk_widget_set_sensitive(GTK_WIDGET(console->gui_mode), ready);
         for (guint i = 0; i < G_N_ELEMENTS(console->control_options); i++) {
-            gtk_widget_set_sensitive(GTK_WIDGET(console->control_options[i]), console->connected);
+            gtk_widget_set_sensitive(GTK_WIDGET(console->control_options[i]), ready);
         }
         for (guint i = 0; i < G_N_ELEMENTS(console->parameter_options); i++) {
-            gtk_widget_set_sensitive(GTK_WIDGET(console->parameter_options[i]), console->connected);
+            gtk_widget_set_sensitive(GTK_WIDGET(console->parameter_options[i]), ready);
         }
         for (guint i = 0; i < G_N_ELEMENTS(console->lock_options); i++) {
-            gtk_widget_set_sensitive(GTK_WIDGET(console->lock_options[i]), console->connected);
+            gtk_widget_set_sensitive(GTK_WIDGET(console->lock_options[i]), ready);
         }
     }
     if (console->write_buttons != NULL) {
         for (guint i = 0; i < console->write_buttons->len; i++) {
             GtkWidget *button = g_ptr_array_index(console->write_buttons, i);
             guint bit = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "control-bit"));
-            gtk_widget_set_sensitive(button, console->connected &&
-                                     (bit == 0 || (console->telemetry.control_mode & (1u << bit))));
+            gboolean setting_enabled = ready &&
+                (bit == G_MAXUINT || (console->telemetry.control_mode & (1u << bit)) != 0);
+            gtk_widget_set_sensitive(button, setting_enabled);
+            gtk_widget_set_sensitive(g_object_get_data(G_OBJECT(button), "spin"), setting_enabled);
         }
     }
+    gtk_widget_set_sensitive(GTK_WIDGET(console->connect_button), !console->connection_pending);
     gtk_button_set_label(console->laser_button, console->laser_on ? "关闭激光" : "开启激光");
     gtk_button_set_label(console->red_button, console->red_on ? "关闭红光" : "开启红光");
     gtk_button_set_label(console->mo_button, console->mo_on ? "关闭 MO" : "开启 MO");
@@ -220,10 +277,12 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     if (telemetry->serial_number[0] != '\0') {
         g_strlcpy(console->telemetry.serial_number, telemetry->serial_number,
                   sizeof(console->telemetry.serial_number));
+        gchar *serial_status = g_strdup_printf("设备 SN：%s", telemetry->serial_number);
+        gtk_label_set_text(console->serial_status_label, serial_status);
+        g_free(serial_status);
     }
     const JptTelemetry *current = &console->telemetry;
     gtk_label_set_text(console->serial_label, current->serial_number[0] ? current->serial_number : "未读取");
-    gtk_label_set_text(console->serial_status_label, current->serial_number[0] ? current->serial_number : "SN: 未读取");
     gchar *text = g_strdup_printf("%u %%", current->real_power_percent);
     gtk_label_set_text(console->real_power_label, text);
     gtk_progress_bar_set_fraction(console->power_bar,
@@ -289,6 +348,7 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     console->laser_on = (current->status & (1u << 0)) != 0;
     console->mo_on = (current->status & (1u << 1)) != 0;
     console->red_on = (current->status & (1u << 2)) != 0;
+    update_device_status(console);
     update_output_buttons(console);
     console->power_samples[console->sample_index] = CLAMP(current->real_power_percent, 0, 100);
     console->sample_index = (console->sample_index + 1) % G_N_ELEMENTS(console->power_samples);
@@ -305,10 +365,11 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         return;
     }
     if (result->type == JPT_CLIENT_CONNECTION) {
+        console->connection_pending = FALSE;
         if (result->connected) {
             console->connected = TRUE;
             gtk_button_set_label(console->connect_button, "断开");
-            set_connection_state(console, "已连接", TRUE, FALSE);
+            set_connection_state(console, "正在读取设备", FALSE, FALSE);
             append_log(console, "连接已建立，开始读取设备信息");
             console->initialized = FALSE;
             jpt_client_read_initial_async(console->client, result_callback, console);
@@ -320,25 +381,36 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
                 gtk_label_set_text(console->last_error_label, result->error->message);
             }
         }
+        update_device_status(console);
         update_output_buttons(console);
         return;
     }
 
     if (result->type == JPT_CLIENT_DISCONNECTED) {
         console->connected = FALSE;
+        console->connection_pending = FALSE;
         console->poll_pending = FALSE;
         console->initialized = FALSE;
         set_connection_state(console, "未连接", FALSE, FALSE);
         gtk_button_set_label(console->connect_button, "连接");
+        update_device_status(console);
         update_output_buttons(console);
         return;
     }
 
     if (result->type == JPT_CLIENT_TELEMETRY) {
         console->poll_pending = FALSE;
+        if (!console->connected) {
+            return;
+        }
         if (result->error != NULL) {
             gtk_label_set_text(console->last_error_label, result->error->message);
             append_log(console, "轮询失败：%s", result->error->message);
+            if (!console->initialized) {
+                set_connection_state(console, "设备读取失败", FALSE, TRUE);
+                set_status_item(console->device_indicator, console->device_status_label,
+                                "设备读取失败", "error");
+            }
             return;
         }
         update_telemetry(console, &result->telemetry);
@@ -369,7 +441,10 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             }
             console->updating_controls = FALSE;
             console->initialized = TRUE;
+            set_connection_state(console, "已连接", TRUE, FALSE);
         }
+        update_device_status(console);
+        update_output_buttons(console);
         if (console->poll_source == 0) {
             console->poll_source = g_timeout_add_seconds(1, poll_tick, console);
         }
@@ -380,9 +455,12 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         if (result->error != NULL) {
             gtk_label_set_text(console->last_error_label, result->error->message);
             append_log(console, "命令失败：%s", result->error->message);
+            set_status_item(console->command_indicator, console->last_command_label,
+                            "命令失败", "error");
         } else if (result->exchange != NULL) {
             gchar *message = g_strdup_printf("命令 0x%04X 已确认", result->exchange->frame->command);
-            gtk_label_set_text(console->last_command_label, message);
+            set_status_item(console->command_indicator, console->last_command_label,
+                            message, "success");
             g_free(message);
         }
     }
@@ -407,7 +485,11 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
     (void)button;
     LaserConsole *console = user_data;
     if (console->connected) {
+        console->connected = FALSE;
+        console->connection_pending = TRUE;
         set_connection_state(console, "正在断开", FALSE, FALSE);
+        update_device_status(console);
+        update_output_buttons(console);
         jpt_client_disconnect_async(console->client, result_callback, console);
         return;
     }
@@ -417,7 +499,10 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
         set_connection_state(console, "请输入设备地址", FALSE, TRUE);
         return;
     }
+    console->connection_pending = TRUE;
     set_connection_state(console, "正在连接", FALSE, FALSE);
+    update_device_status(console);
+    update_output_buttons(console);
     guint selected = gtk_drop_down_get_selected(console->transport_dropdown);
     if (selected == 0) {
         jpt_client_connect_serial_async(console->client, endpoint, result_callback, console);
@@ -451,28 +536,79 @@ static void write_result_callback(const JptClientResult *result, gpointer user_d
 
 static void send_u16(LaserConsole *console, guint16 command, guint16 value)
 {
-    if (!console->connected) {
-        gtk_label_set_text(console->last_error_label, "设备未连接");
+    if (!console->connected || !console->initialized) {
+        gtk_label_set_text(console->last_error_label, "设备尚未就绪");
         return;
     }
+    set_status_item(console->command_indicator, console->last_command_label,
+                    "命令发送中", "warning");
     jpt_client_write_u16_async(console->client, command, value, write_result_callback, console);
+}
+
+static gboolean write_spin_value(LaserConsole *console, GtkSpinButton *spin,
+                                 guint command, guint control_bit)
+{
+    if (!console->connected || !console->initialized ||
+        (control_bit != G_MAXUINT &&
+        !(console->telemetry.control_mode & (1u << control_bit)))) {
+        return FALSE;
+    }
+    guint value = (guint)gtk_spin_button_get_value_as_int(spin);
+    if (command == JPT_CMD_POWER || command == JPT_CMD_LOCK_POWER) {
+        value = (guint)((gdouble)value * 4095.0 / 100.0 + 0.5);
+    }
+    send_u16(console, (guint16)command, (guint16)value);
+    return TRUE;
 }
 
 static void spin_write_clicked(GtkButton *button, gpointer user_data)
 {
     LaserConsole *console = user_data;
     guint control_bit = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "control-bit"));
-    if (!console->connected || (control_bit != 0 &&
-        !(console->telemetry.control_mode & (1u << control_bit)))) {
-        return;
-    }
     GtkSpinButton *spin = g_object_get_data(G_OBJECT(button), "spin");
     guint command = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "command"));
-    guint value = (guint)gtk_spin_button_get_value_as_int(spin);
-    if (command == JPT_CMD_POWER || command == JPT_CMD_LOCK_POWER) {
-        value = (guint)((gdouble)value * 4095.0 / 100.0 + 0.5);
+    write_spin_value(console, spin, command, control_bit);
+}
+
+static gboolean spin_key_pressed(GtkEventControllerKey *controller, guint keyval, guint keycode,
+                                 GdkModifierType state, gpointer user_data)
+{
+    (void)controller;
+    (void)keycode;
+    (void)state;
+    if (keyval != GDK_KEY_Return && keyval != GDK_KEY_KP_Enter) {
+        return FALSE;
     }
-    send_u16(console, (guint16)command, (guint16)value);
+    GtkWidget *button = user_data;
+    GtkSpinButton *spin = g_object_get_data(G_OBJECT(button), "spin");
+    gtk_spin_button_update(spin);
+    gtk_widget_activate(button);
+    return TRUE;
+}
+
+static void apply_parameters_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    LaserConsole *console = user_data;
+    const struct {
+        GtkSpinButton *spin;
+        guint command;
+        guint control_bit;
+    } settings[] = {
+        {console->power_spin, JPT_CMD_POWER, 4},
+        {console->frequency_spin, JPT_CMD_FREQUENCY, 3},
+        {console->pulse_spin, JPT_CMD_PULSE_WIDTH, 2},
+        {console->simmer_spin, JPT_CMD_SIMMER, G_MAXUINT},
+    };
+    guint sent = 0;
+    for (guint i = 0; i < G_N_ELEMENTS(settings); i++) {
+        sent += write_spin_value(console, settings[i].spin, settings[i].command,
+                                 settings[i].control_bit);
+    }
+    if (sent > 0) {
+        set_status_item(console->command_indicator, console->last_command_label,
+                        "正在应用实时参数", "warning");
+    }
 }
 
 static void mode_toggled(GtkCheckButton *button, gpointer user_data)
@@ -557,11 +693,12 @@ static void emergency_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
     LaserConsole *console = user_data;
-    if (console->connected) {
-        send_u16(console, JPT_CMD_GUI_PA, 0);
-        send_u16(console, JPT_CMD_GUI_MO, 0);
-        send_u16(console, JPT_CMD_RED_LIGHT, 0);
+    if (!console->connected || !console->initialized) {
+        return;
     }
+    send_u16(console, JPT_CMD_GUI_PA, 0);
+    send_u16(console, JPT_CMD_GUI_MO, 0);
+    send_u16(console, JPT_CMD_RED_LIGHT, 0);
     console->laser_on = FALSE;
     console->mo_on = FALSE;
     console->red_on = FALSE;
@@ -635,6 +772,10 @@ static void add_spin_setting(GtkWidget *box, const gchar *title, GtkSpinButton *
     g_object_set_data(G_OBJECT(button), "command", GUINT_TO_POINTER(command));
     g_object_set_data(G_OBJECT(button), "control-bit", GUINT_TO_POINTER(control_bit));
     g_signal_connect(button, "clicked", G_CALLBACK(spin_write_clicked), console);
+    GtkEventController *key_controller = gtk_event_controller_key_new();
+    gtk_event_controller_set_propagation_phase(key_controller, GTK_PHASE_CAPTURE);
+    g_signal_connect(key_controller, "key-pressed", G_CALLBACK(spin_key_pressed), button);
+    gtk_widget_add_controller(GTK_WIDGET(spin), key_controller);
     if (console->write_buttons != NULL) {
         g_ptr_array_add(console->write_buttons, button);
     }
@@ -673,13 +814,14 @@ static GtkWidget *build_control_page(LaserConsole *console)
     gtk_widget_set_margin_top(page, 20);
     gtk_widget_set_margin_bottom(page, 20);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), page);
+    console->control_page = scroll;
 
     GtkWidget *safety_box;
     GtkWidget *safety_card = make_card("输出许可", &safety_box);
     GtkWidget *warning = gtk_label_new("1064 nm 为不可见 IV 级激光。确认防护区域、联锁和护目镜状态后，才启用输出按钮。即使设为 0%，输出端仍可能有约 100 mW 激光。");
     gtk_label_set_wrap(GTK_LABEL(warning), TRUE);
     gtk_label_set_xalign(GTK_LABEL(warning), 0.0f);
-    gtk_widget_add_css_class(warning, "warning");
+    gtk_widget_add_css_class(warning, "warning-panel");
     gtk_box_append(GTK_BOX(safety_box), warning);
     console->safety_ack = GTK_CHECK_BUTTON(gtk_check_button_new_with_label("已确认防护区域和联锁状态"));
     gtk_box_append(GTK_BOX(safety_box), GTK_WIDGET(console->safety_ack));
@@ -692,10 +834,22 @@ static GtkWidget *build_control_page(LaserConsole *console)
     console->frequency_spin = make_spin(1, 4000, 1, 100);
     console->pulse_spin = make_spin(1, 500, 1, 20);
     console->simmer_spin = make_spin(0, 1000, 1, 0);
-    add_spin_setting(parameter_box, "功率 (%)", console->power_spin, JPT_CMD_POWER, 5, console);
-    add_spin_setting(parameter_box, "频率 (kHz)", console->frequency_spin, JPT_CMD_FREQUENCY, 4, console);
-    add_spin_setting(parameter_box, "脉宽 (ns)", console->pulse_spin, JPT_CMD_PULSE_WIDTH, 3, console);
-    add_spin_setting(parameter_box, "Simmer", console->simmer_spin, JPT_CMD_SIMMER, 0, console);
+    add_spin_setting(parameter_box, "功率 (%)", console->power_spin, JPT_CMD_POWER, 4, console);
+    add_spin_setting(parameter_box, "频率 (kHz)", console->frequency_spin, JPT_CMD_FREQUENCY, 3, console);
+    add_spin_setting(parameter_box, "脉宽 (ns)", console->pulse_spin, JPT_CMD_PULSE_WIDTH, 2, console);
+    add_spin_setting(parameter_box, "Simmer", console->simmer_spin, JPT_CMD_SIMMER, G_MAXUINT, console);
+    GtkWidget *apply_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_set_halign(apply_row, GTK_ALIGN_END);
+    console->apply_parameters_button = GTK_BUTTON(gtk_button_new());
+    GtkWidget *apply_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_box_append(GTK_BOX(apply_content), gtk_image_new_from_icon_name("document-save-symbolic"));
+    gtk_box_append(GTK_BOX(apply_content), gtk_label_new("应用实时参数"));
+    gtk_button_set_child(console->apply_parameters_button, apply_content);
+    gtk_widget_add_css_class(GTK_WIDGET(console->apply_parameters_button), "suggested-action");
+    g_signal_connect(console->apply_parameters_button, "clicked",
+                     G_CALLBACK(apply_parameters_clicked), console);
+    gtk_box_append(GTK_BOX(apply_row), GTK_WIDGET(console->apply_parameters_button));
+    gtk_box_append(GTK_BOX(parameter_box), apply_row);
     gtk_box_append(GTK_BOX(page), parameter_card);
 
     GtkWidget *output_box;
@@ -767,11 +921,11 @@ static GtkWidget *build_control_page(LaserConsole *console)
     console->default_simmer_spin = make_spin(0, 1000, 1, 0);
     console->lock_power_spin = make_spin(0, 100, 1, 0);
     console->red_power_spin = make_spin(0, 100, 1, 0);
-    add_spin_setting(default_box, "锁定频率 (kHz)", console->default_frequency_spin, JPT_CMD_LOCK_FREQUENCY, 0, console);
-    add_spin_setting(default_box, "默认脉宽 (ns)", console->default_pulse_spin, JPT_CMD_DEFAULT_PULSE_WIDTH, 0, console);
-    add_spin_setting(default_box, "默认 Simmer", console->default_simmer_spin, JPT_CMD_DEFAULT_SIMMER, 0, console);
-    add_spin_setting(default_box, "锁定功率 (%)", console->lock_power_spin, JPT_CMD_LOCK_POWER, 0, console);
-    add_spin_setting(default_box, "红光功率 (%)", console->red_power_spin, JPT_CMD_RED_LIGHT_POWER, 0, console);
+    add_spin_setting(default_box, "锁定频率 (kHz)", console->default_frequency_spin, JPT_CMD_LOCK_FREQUENCY, G_MAXUINT, console);
+    add_spin_setting(default_box, "默认脉宽 (ns)", console->default_pulse_spin, JPT_CMD_DEFAULT_PULSE_WIDTH, G_MAXUINT, console);
+    add_spin_setting(default_box, "默认 Simmer", console->default_simmer_spin, JPT_CMD_DEFAULT_SIMMER, G_MAXUINT, console);
+    add_spin_setting(default_box, "锁定功率 (%)", console->lock_power_spin, JPT_CMD_LOCK_POWER, G_MAXUINT, console);
+    add_spin_setting(default_box, "红光功率 (%)", console->red_power_spin, JPT_CMD_RED_LIGHT_POWER, G_MAXUINT, console);
     gtk_box_append(GTK_BOX(page), default_card);
 
     update_output_buttons(console);
@@ -933,7 +1087,7 @@ static void apply_css(void)
         ".metric-value { color: @window_fg_color; font-size: 16px; font-weight: 700; }"
         ".value-row { min-height: 34px; }"
         ".compact-button { min-width: 64px; }"
-        ".warning { padding: 10px; border-radius: 7px; }"
+        ".warning-panel { padding: 10px; border-radius: 7px; }"
         ".state-muted { opacity: 0.55; }");
     gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
                                                GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
@@ -982,10 +1136,10 @@ GtkWidget *laser_console_create(AdwApplication *application)
     gtk_box_append(GTK_BOX(connection_box), GTK_WIDGET(console->endpoint_entry));
     gtk_box_append(GTK_BOX(connection_box), GTK_WIDGET(console->connect_button));
     adw_header_bar_pack_end(ADW_HEADER_BAR(header), connection_box);
-    GtkWidget *emergency = gtk_button_new_with_label("紧急关闭");
-    gtk_widget_add_css_class(emergency, "destructive-action");
-    g_signal_connect(emergency, "clicked", G_CALLBACK(emergency_clicked), console);
-    adw_header_bar_pack_start(ADW_HEADER_BAR(header), emergency);
+    console->emergency_button = GTK_BUTTON(gtk_button_new_with_label("紧急关闭"));
+    gtk_widget_add_css_class(GTK_WIDGET(console->emergency_button), "destructive-action");
+    g_signal_connect(console->emergency_button, "clicked", G_CALLBACK(emergency_clicked), console);
+    adw_header_bar_pack_start(ADW_HEADER_BAR(header), GTK_WIDGET(console->emergency_button));
 
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
@@ -994,13 +1148,18 @@ GtkWidget *laser_console_create(AdwApplication *application)
     gtk_widget_set_margin_end(status_bar, 16);
     gtk_widget_set_margin_top(status_bar, 12);
     gtk_widget_set_margin_bottom(status_bar, 4);
-    console->connection_label = GTK_LABEL(gtk_label_new("未连接"));
-    console->serial_status_label = GTK_LABEL(gtk_label_new("SN: 未读取"));
-    console->last_command_label = GTK_LABEL(gtk_label_new("尚无写入命令"));
+    GtkWidget *connection_status = make_status_item("未连接", &console->connection_indicator,
+                                                    &console->connection_label);
+    GtkWidget *device_status = make_status_item("报警状态未知", &console->device_indicator,
+                                                &console->device_status_label);
+    GtkWidget *command_status = make_status_item("等待命令", &console->command_indicator,
+                                                 &console->last_command_label);
+    console->serial_status_label = GTK_LABEL(gtk_label_new("设备 SN：未读取"));
     console->last_error_label = GTK_LABEL(gtk_label_new(""));
-    gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->connection_label));
+    gtk_box_append(GTK_BOX(status_bar), connection_status);
+    gtk_box_append(GTK_BOX(status_bar), device_status);
     gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->serial_status_label));
-    gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->last_command_label));
+    gtk_box_append(GTK_BOX(status_bar), command_status);
     gtk_widget_set_hexpand(GTK_WIDGET(console->last_error_label), TRUE);
     gtk_label_set_xalign(console->last_error_label, 1.0f);
     gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->last_error_label));
@@ -1036,6 +1195,9 @@ GtkWidget *laser_console_create(AdwApplication *application)
     adw_toolbar_view_set_content(toolbar_view, root);
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), GTK_WIDGET(toolbar_view));
     set_connection_state(console, "未连接", FALSE, FALSE);
+    update_device_status(console);
+    set_status_item(console->command_indicator, console->last_command_label,
+                    "等待命令", "dim-label");
     update_output_buttons(console);
     return window;
 }
