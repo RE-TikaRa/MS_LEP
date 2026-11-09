@@ -2,6 +2,35 @@
 
 static GResource *application_resources;
 
+static void load_application_styles(void)
+{
+    GtkCssProvider *provider = gtk_css_provider_new();
+    gtk_css_provider_load_from_string(provider,
+        ".connection-form-row {"
+        "  min-height: 58px;"
+        "  font-size: 1.10em;"
+        "}"
+        ".connection-control {"
+        "  border-radius: 8px;"
+        "  padding: 4px 8px;"
+        "}"
+        ".connection-control > * {"
+        "  min-height: 42px;"
+        "}"
+        ".connection-primary {"
+        "  min-height: 44px;"
+        "  padding: 6px 18px;"
+        "}"
+        ".connection-side-caption {"
+        "  font-size: 1.05em;"
+        "}"
+    );
+    gtk_style_context_add_provider_for_display(
+        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+        GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
+    g_object_unref(provider);
+}
+
 static void register_resources(void)
 {
     GError *error = NULL;
@@ -33,6 +62,7 @@ int main(int argc, char **argv)
 {
     register_resources();
     adw_init();
+    load_application_styles();
     g_set_application_name("MS LEP");
     AdwApplication *application = adw_application_new("io.tikara.mslep", G_APPLICATION_DEFAULT_FLAGS);
     g_signal_connect(application, "activate", G_CALLBACK(activate), NULL);

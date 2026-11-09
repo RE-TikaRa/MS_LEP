@@ -449,18 +449,19 @@ static void build_connection_page(LaserConsole *console)
     gtk_picture_set_content_fit(console->device_picture, GTK_CONTENT_FIT_CONTAIN);
     gtk_picture_set_can_shrink(console->device_picture, TRUE);
     gtk_picture_set_alternative_text(console->device_picture, "YDFLP-E3-100-M7 脉冲光纤激光器");
-    gtk_widget_set_size_request(GTK_WIDGET(console->device_picture), 260, 160);
+    gtk_widget_set_size_request(GTK_WIDGET(console->device_picture), 280, 180);
     gtk_widget_set_halign(GTK_WIDGET(console->device_picture), GTK_ALIGN_CENTER);
     console->connection_icon = GTK_IMAGE(gtk_image_new_from_icon_name("network-offline-symbolic"));
     gtk_image_set_pixel_size(console->connection_icon, 24);
     gtk_widget_add_css_class(GTK_WIDGET(console->connection_icon), "dim-label");
     gtk_widget_set_halign(GTK_WIDGET(console->connection_icon), GTK_ALIGN_CENTER);
     console->connection_title = GTK_LABEL(gtk_label_new("YDFLP-E3-100-M7"));
-    gtk_widget_add_css_class(GTK_WIDGET(console->connection_title), "title-2");
+    gtk_widget_add_css_class(GTK_WIDGET(console->connection_title), "title-1");
     gtk_label_set_xalign(console->connection_title, 0.5f);
     gtk_widget_set_halign(GTK_WIDGET(console->connection_title), GTK_ALIGN_CENTER);
     console->connection_description = GTK_LABEL(gtk_label_new("MOPA 脉冲光纤激光器"));
     gtk_widget_add_css_class(GTK_WIDGET(console->connection_description), "dim-label");
+    gtk_widget_add_css_class(GTK_WIDGET(console->connection_description), "connection-side-caption");
     gtk_label_set_xalign(console->connection_description, 0.5f);
     gtk_label_set_wrap(console->connection_description, TRUE);
     gtk_label_set_justify(console->connection_description, GTK_JUSTIFY_CENTER);
@@ -474,16 +475,20 @@ static void build_connection_page(LaserConsole *console)
 
     AdwPreferencesGroup *connection_group = make_group("设备连接");
     gtk_widget_set_hexpand(GTK_WIDGET(connection_group), TRUE);
+    gtk_widget_add_css_class(GTK_WIDGET(console->transport_mode_row), "connection-form-row");
     adw_preferences_group_add(connection_group,
                               GTK_WIDGET(console->transport_mode_row));
     console->serial_device_row = GTK_WIDGET(make_widget_row("串口设备", console->serial_controls));
+    gtk_widget_add_css_class(console->serial_device_row, "connection-form-row");
     adw_preferences_group_add(connection_group, console->serial_device_row);
     console->endpoint_row = GTK_WIDGET(make_widget_row("TCP 地址", GTK_WIDGET(console->endpoint_entry)));
+    gtk_widget_add_css_class(console->endpoint_row, "connection-form-row");
     adw_preferences_group_add(connection_group, console->endpoint_row);
     gtk_widget_add_css_class(GTK_WIDGET(console->connect_button), "suggested-action");
     adw_preferences_group_set_header_suffix(connection_group, GTK_WIDGET(console->connect_button));
     console->serial_settings_row = ADW_EXPANDER_ROW(adw_expander_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(console->serial_settings_row), "串口参数");
+    gtk_widget_add_css_class(GTK_WIDGET(console->serial_settings_row), "connection-form-row");
     adw_expander_row_set_expanded(console->serial_settings_row, FALSE);
 
     const gchar *baud_options[] = {"9600", "19200", "38400", "57600（手册默认）", "115200", NULL};
@@ -519,6 +524,7 @@ static void build_connection_page(LaserConsole *console)
     update_transport_controls(console);
 
     GtkWidget *form_panel = gtk_box_new(GTK_ORIENTATION_VERTICAL, 16);
+    gtk_widget_add_css_class(form_panel, "connection-form");
     gtk_widget_set_hexpand(form_panel, TRUE);
     gtk_widget_set_vexpand(form_panel, FALSE);
     gtk_widget_set_valign(form_panel, GTK_ALIGN_CENTER);
@@ -529,9 +535,9 @@ static void build_connection_page(LaserConsole *console)
     gtk_box_append(GTK_BOX(form_panel), GTK_WIDGET(connection_group));
 
     gtk_widget_add_css_class(visual_panel, "card");
-    gtk_widget_set_size_request(visual_panel, 320, -1);
-    gtk_widget_set_size_request(form_panel, 500, -1);
-    console->connection_split_box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 28));
+    gtk_widget_set_size_request(visual_panel, 300, -1);
+    gtk_widget_set_size_request(form_panel, 560, -1);
+    console->connection_split_box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 32));
     gtk_widget_set_hexpand(GTK_WIDGET(console->connection_split_box), TRUE);
     gtk_box_append(console->connection_split_box, visual_panel);
     gtk_box_append(console->connection_split_box, form_panel);
@@ -1504,21 +1510,29 @@ GtkWidget *laser_console_create(AdwApplication *application)
                      G_CALLBACK(transport_mode_changed), console);
 
     console->serial_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    gtk_widget_set_hexpand(console->serial_controls, TRUE);
     console->serial_port_dropdown = GTK_DROP_DOWN(
         gtk_drop_down_new(G_LIST_MODEL(console->serial_port_model), NULL));
+    gtk_widget_add_css_class(GTK_WIDGET(console->serial_port_dropdown), "card");
+    gtk_widget_add_css_class(GTK_WIDGET(console->serial_port_dropdown), "connection-control");
     gtk_drop_down_set_enable_search(console->serial_port_dropdown, TRUE);
-    gtk_widget_set_size_request(GTK_WIDGET(console->serial_port_dropdown), 300, -1);
+    gtk_widget_set_size_request(GTK_WIDGET(console->serial_port_dropdown), 360, -1);
+    gtk_widget_set_hexpand(GTK_WIDGET(console->serial_port_dropdown), TRUE);
     g_signal_connect(console->serial_port_dropdown, "notify::selected",
                      G_CALLBACK(serial_port_selection_changed), console);
     console->refresh_serial_button = GTK_BUTTON(gtk_button_new_from_icon_name("view-refresh-symbolic"));
+    gtk_widget_set_size_request(GTK_WIDGET(console->refresh_serial_button), 44, 44);
     gtk_widget_set_tooltip_text(GTK_WIDGET(console->refresh_serial_button), "刷新串口设备");
     g_signal_connect(console->refresh_serial_button, "clicked",
                      G_CALLBACK(refresh_serial_clicked), console);
     console->manual_serial_entry = GTK_ENTRY(gtk_entry_new());
+    gtk_widget_add_css_class(GTK_WIDGET(console->manual_serial_entry), "card");
+    gtk_widget_add_css_class(GTK_WIDGET(console->manual_serial_entry), "connection-control");
     gtk_editable_set_text(GTK_EDITABLE(console->manual_serial_entry), "/dev/ttyUSB0");
     gtk_entry_set_placeholder_text(console->manual_serial_entry, "/dev/ttyUSB0");
-    gtk_widget_set_size_request(GTK_WIDGET(console->manual_serial_entry), 180, -1);
+    gtk_widget_set_size_request(GTK_WIDGET(console->manual_serial_entry), 240, -1);
     console->select_serial_button = GTK_BUTTON(gtk_button_new_from_icon_name("view-list-symbolic"));
+    gtk_widget_set_size_request(GTK_WIDGET(console->select_serial_button), 44, 44);
     gtk_widget_set_tooltip_text(GTK_WIDGET(console->select_serial_button), "选择检测到的串口");
     g_signal_connect(console->select_serial_button, "clicked",
                      G_CALLBACK(select_serial_list_clicked), console);
@@ -1528,10 +1542,14 @@ GtkWidget *laser_console_create(AdwApplication *application)
     gtk_box_append(GTK_BOX(console->serial_controls), GTK_WIDGET(console->select_serial_button));
 
     console->endpoint_entry = GTK_ENTRY(gtk_entry_new());
+    gtk_widget_add_css_class(GTK_WIDGET(console->endpoint_entry), "card");
+    gtk_widget_add_css_class(GTK_WIDGET(console->endpoint_entry), "connection-control");
     gtk_editable_set_text(GTK_EDITABLE(console->endpoint_entry), "192.168.0.10:5000");
     gtk_entry_set_placeholder_text(console->endpoint_entry, "主机或 IP 地址:端口");
-    gtk_widget_set_size_request(GTK_WIDGET(console->endpoint_entry), 260, -1);
+    gtk_widget_set_size_request(GTK_WIDGET(console->endpoint_entry), 360, 44);
     console->connect_button = GTK_BUTTON(gtk_button_new_with_label("连接"));
+    gtk_widget_set_size_request(GTK_WIDGET(console->connect_button), 92, 44);
+    gtk_widget_add_css_class(GTK_WIDGET(console->connect_button), "connection-primary");
     g_signal_connect(console->connect_button, "clicked", G_CALLBACK(connect_clicked), console);
 
     console->disconnect_button = GTK_BUTTON(gtk_button_new_with_label("断开连接"));
