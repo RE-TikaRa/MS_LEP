@@ -504,10 +504,15 @@ static void build_connection_page(LaserConsole *console)
     AdwClamp *clamp = ADW_CLAMP(adw_clamp_new());
     adw_clamp_set_maximum_size(clamp, 620);
     adw_clamp_set_child(clamp, content);
+    gtk_widget_set_halign(GTK_WIDGET(clamp), GTK_ALIGN_CENTER);
     gtk_widget_set_valign(GTK_WIDGET(clamp), GTK_ALIGN_CENTER);
     gtk_widget_set_margin_start(GTK_WIDGET(clamp), 24);
     gtk_widget_set_margin_end(GTK_WIDGET(clamp), 24);
-    gtk_box_append(GTK_BOX(console->connection_page), GTK_WIDGET(clamp));
+    GtkCenterBox *center_box = GTK_CENTER_BOX(gtk_center_box_new());
+    gtk_widget_set_hexpand(GTK_WIDGET(center_box), TRUE);
+    gtk_widget_set_vexpand(GTK_WIDGET(center_box), TRUE);
+    gtk_center_box_set_center_widget(center_box, GTK_WIDGET(clamp));
+    gtk_box_append(GTK_BOX(console->connection_page), GTK_WIDGET(center_box));
 }
 
 static void update_device_status(LaserConsole *console)
