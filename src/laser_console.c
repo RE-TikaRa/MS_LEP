@@ -52,23 +52,19 @@ struct _LaserConsole {
     GtkLabel *alarm_indicators[8];
     GtkLabel *alarm_counts[8];
     GtkTextBuffer *log_buffer;
-    GtkSpinButton *power_spin;
-    GtkSpinButton *frequency_spin;
-    GtkSpinButton *pulse_spin;
-    GtkSpinButton *simmer_spin;
-    GtkSpinButton *default_frequency_spin;
-    GtkSpinButton *default_pulse_spin;
-    GtkSpinButton *default_simmer_spin;
-    GtkSpinButton *lock_power_spin;
-    GtkSpinButton *red_power_spin;
+    AdwSpinRow *power_spin;
+    AdwSpinRow *frequency_spin;
+    AdwSpinRow *pulse_spin;
+    AdwSpinRow *simmer_spin;
+    AdwSpinRow *default_frequency_spin;
+    AdwSpinRow *default_pulse_spin;
+    AdwSpinRow *default_simmer_spin;
+    AdwSpinRow *lock_power_spin;
+    AdwSpinRow *red_power_spin;
     GtkProgressBar *power_bar;
-    GtkWidget *chart;
     GPtrArray *write_buttons;
     JptClient *client;
     JptTelemetry telemetry;
-    gdouble power_samples[120];
-    guint sample_count;
-    guint sample_index;
     guint poll_source;
     gboolean connected;
     gboolean connection_pending;
@@ -169,14 +165,18 @@ static void set_status_item(GtkWidget *indicator, GtkLabel *label, const gchar *
     gtk_label_set_text(label, text);
 }
 
-static GtkWidget *make_status_item(const gchar *text, GtkWidget **indicator, GtkLabel **label)
+static GtkWidget *make_status_item(const gchar *title, const gchar *text,
+                                       GtkWidget **indicator, GtkLabel **label)
 {
     GtkWidget *item = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
+    GtkWidget *title_label = gtk_label_new(title);
+    gtk_widget_add_css_class(title_label, "dim-label");
     *indicator = gtk_image_new_from_icon_name("media-record-symbolic");
     gtk_image_set_pixel_size(GTK_IMAGE(*indicator), 10);
     gtk_widget_add_css_class(*indicator, "dim-label");
     *label = GTK_LABEL(gtk_label_new(text));
     gtk_box_append(GTK_BOX(item), *indicator);
+    gtk_box_append(GTK_BOX(item), title_label);
     gtk_box_append(GTK_BOX(item), GTK_WIDGET(*label));
     return item;
 }
@@ -277,9 +277,7 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     if (telemetry->serial_number[0] != '\0') {
         g_strlcpy(console->telemetry.serial_number, telemetry->serial_number,
                   sizeof(console->telemetry.serial_number));
-        gchar *serial_status = g_strdup_printf("设备 SN：%s", telemetry->serial_number);
-        gtk_label_set_text(console->serial_status_label, serial_status);
-        g_free(serial_status);
+        gtk_label_set_text(console->serial_status_label, telemetry->serial_number);
     }
     const JptTelemetry *current = &console->telemetry;
     gtk_label_set_text(console->serial_label, current->serial_number[0] ? current->serial_number : "未读取");
@@ -329,12 +327,10 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     g_free(text);
     for (guint i = 0; i < G_N_ELEMENTS(console->power_indicators); i++) {
         gboolean active = current->status & (1u << (4 + i));
-        gchar *name = g_strdup_printf("D%u  %u", 7 - i, active ? 1 : 0);
-        gtk_label_set_text(console->power_indicators[i], name);
+        gtk_label_set_text(console->power_indicators[i], active ? "1" : "0");
         gtk_widget_remove_css_class(GTK_WIDGET(console->power_indicators[i]), "success");
         gtk_widget_remove_css_class(GTK_WIDGET(console->power_indicators[i]), "dim-label");
         gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), active ? "success" : "dim-label");
-        g_free(name);
     }
 
     for (guint i = 0; i < G_N_ELEMENTS(console->alarm_indicators); i++) {
@@ -350,12 +346,6 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     console->red_on = (current->status & (1u << 2)) != 0;
     update_device_status(console);
     update_output_buttons(console);
-    console->power_samples[console->sample_index] = CLAMP(current->real_power_percent, 0, 100);
-    console->sample_index = (console->sample_index + 1) % G_N_ELEMENTS(console->power_samples);
-    console->sample_count = MIN(console->sample_count + 1, G_N_ELEMENTS(console->power_samples));
-    if (console->chart != NULL) {
-        gtk_widget_queue_draw(console->chart);
-    }
 }
 
 static void result_callback(const JptClientResult *result, gpointer user_data)
@@ -415,14 +405,14 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         }
         update_telemetry(console, &result->telemetry);
         if (!console->initialized) {
-            gtk_spin_button_set_value(console->default_simmer_spin, result->telemetry.default_simmer);
-            gtk_spin_button_set_value(console->default_pulse_spin, result->telemetry.default_pulse_width);
-            gtk_spin_button_set_value(console->default_frequency_spin, result->telemetry.lock_frequency);
-            gtk_spin_button_set_value(console->lock_power_spin,
-                                      (gdouble)result->telemetry.lock_power * 100.0 / 4095.0);
-            gtk_spin_button_set_value(console->red_power_spin, result->telemetry.red_light_power);
-            gtk_spin_button_set_value(console->frequency_spin, result->telemetry.real_frequency);
-            gtk_spin_button_set_value(console->pulse_spin, result->telemetry.real_pulse_width);
+            adw_spin_row_set_value(console->default_simmer_spin, result->telemetry.default_simmer);
+            adw_spin_row_set_value(console->default_pulse_spin, result->telemetry.default_pulse_width);
+            adw_spin_row_set_value(console->default_frequency_spin, result->telemetry.lock_frequency);
+            adw_spin_row_set_value(console->lock_power_spin,
+                                   (gdouble)result->telemetry.lock_power * 100.0 / 4095.0);
+            adw_spin_row_set_value(console->red_power_spin, result->telemetry.red_light_power);
+            adw_spin_row_set_value(console->frequency_spin, result->telemetry.real_frequency);
+            adw_spin_row_set_value(console->pulse_spin, result->telemetry.real_pulse_width);
             console->updating_controls = TRUE;
             gtk_check_button_set_active(console->gui_mode, result->telemetry.control_mode == 0x1f);
             gtk_check_button_set_active(console->free_mode, result->telemetry.control_mode != 0x1f);
@@ -545,7 +535,7 @@ static void send_u16(LaserConsole *console, guint16 command, guint16 value)
     jpt_client_write_u16_async(console->client, command, value, write_result_callback, console);
 }
 
-static gboolean write_spin_value(LaserConsole *console, GtkSpinButton *spin,
+static gboolean write_spin_value(LaserConsole *console, AdwSpinRow *spin,
                                  guint command, guint control_bit)
 {
     if (!console->connected || !console->initialized ||
@@ -553,7 +543,7 @@ static gboolean write_spin_value(LaserConsole *console, GtkSpinButton *spin,
         !(console->telemetry.control_mode & (1u << control_bit)))) {
         return FALSE;
     }
-    guint value = (guint)gtk_spin_button_get_value_as_int(spin);
+    guint value = (guint)adw_spin_row_get_value(spin);
     if (command == JPT_CMD_POWER || command == JPT_CMD_LOCK_POWER) {
         value = (guint)((gdouble)value * 4095.0 / 100.0 + 0.5);
     }
@@ -565,7 +555,7 @@ static void spin_write_clicked(GtkButton *button, gpointer user_data)
 {
     LaserConsole *console = user_data;
     guint control_bit = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "control-bit"));
-    GtkSpinButton *spin = g_object_get_data(G_OBJECT(button), "spin");
+    AdwSpinRow *spin = g_object_get_data(G_OBJECT(button), "spin");
     guint command = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "command"));
     write_spin_value(console, spin, command, control_bit);
 }
@@ -580,8 +570,8 @@ static gboolean spin_key_pressed(GtkEventControllerKey *controller, guint keyval
         return FALSE;
     }
     GtkWidget *button = user_data;
-    GtkSpinButton *spin = g_object_get_data(G_OBJECT(button), "spin");
-    gtk_spin_button_update(spin);
+    AdwSpinRow *spin = g_object_get_data(G_OBJECT(button), "spin");
+    adw_spin_row_update(spin);
     gtk_widget_activate(button);
     return TRUE;
 }
@@ -591,7 +581,7 @@ static void apply_parameters_clicked(GtkButton *button, gpointer user_data)
     (void)button;
     LaserConsole *console = user_data;
     const struct {
-        GtkSpinButton *spin;
+        AdwSpinRow *spin;
         guint command;
         guint control_bit;
     } settings[] = {
@@ -706,68 +696,39 @@ static void emergency_clicked(GtkButton *button, gpointer user_data)
     append_log(console, "已发送 PA=0、MO=0、红光=0");
 }
 
-static GtkWidget *make_value_row(const gchar *title, GtkWidget *value, GtkWidget *button)
+static AdwPreferencesGroup *make_group(const gchar *title)
 {
-    GtkWidget *row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    gtk_widget_add_css_class(row, "value-row");
-    GtkWidget *label = gtk_label_new(title);
-    gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-    gtk_widget_set_hexpand(label, TRUE);
-    gtk_box_append(GTK_BOX(row), label);
-    gtk_box_append(GTK_BOX(row), value);
-    if (button != NULL) {
-        gtk_box_append(GTK_BOX(row), button);
-    }
+    AdwPreferencesGroup *group = ADW_PREFERENCES_GROUP(adw_preferences_group_new());
+    adw_preferences_group_set_title(group, title);
+    return group;
+}
+
+static AdwActionRow *make_property_row(const gchar *title, GtkLabel **value)
+{
+    AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+    gtk_widget_add_css_class(GTK_WIDGET(row), "property");
+    *value = GTK_LABEL(gtk_label_new("--"));
+    gtk_label_set_selectable(*value, TRUE);
+    adw_action_row_add_suffix(row, GTK_WIDGET(*value));
     return row;
 }
 
-static GtkSpinButton *make_spin(gdouble min, gdouble max, gdouble step, gdouble value)
+static AdwSpinRow *make_spin(gdouble min, gdouble max, gdouble step, gdouble value)
 {
-    GtkSpinButton *spin = GTK_SPIN_BUTTON(gtk_spin_button_new_with_range(min, max, step));
-    gtk_spin_button_set_value(spin, value);
-    gtk_widget_set_size_request(GTK_WIDGET(spin), 120, -1);
+    AdwSpinRow *spin = ADW_SPIN_ROW(adw_spin_row_new_with_range(min, max, step));
+    adw_spin_row_set_digits(spin, 0);
+    adw_spin_row_set_numeric(spin, TRUE);
+    adw_spin_row_set_snap_to_ticks(spin, TRUE);
+    adw_spin_row_set_value(spin, value);
     return spin;
 }
 
-static GtkWidget *make_card(const gchar *title, GtkWidget **content)
-{
-    GtkWidget *frame = gtk_frame_new(NULL);
-    gtk_widget_add_css_class(frame, "card");
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_widget_set_margin_start(box, 16);
-    gtk_widget_set_margin_end(box, 16);
-    gtk_widget_set_margin_top(box, 14);
-    gtk_widget_set_margin_bottom(box, 14);
-    GtkWidget *heading = gtk_label_new(title);
-    gtk_widget_add_css_class(heading, "card-title");
-    gtk_label_set_xalign(GTK_LABEL(heading), 0.0f);
-    gtk_box_append(GTK_BOX(box), heading);
-    gtk_frame_set_child(GTK_FRAME(frame), box);
-    *content = box;
-    return frame;
-}
-
-static GtkWidget *make_metric(const gchar *title, GtkLabel **value)
-{
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 3);
-    gtk_widget_add_css_class(box, "metric");
-    GtkWidget *title_label = gtk_label_new(title);
-    gtk_widget_add_css_class(title_label, "metric-title");
-    gtk_widget_add_css_class(title_label, "dim-label");
-    gtk_label_set_xalign(GTK_LABEL(title_label), 0.0f);
-    *value = GTK_LABEL(gtk_label_new("--"));
-    gtk_widget_add_css_class(GTK_WIDGET(*value), "metric-value");
-    gtk_label_set_xalign(*value, 0.0f);
-    gtk_box_append(GTK_BOX(box), title_label);
-    gtk_box_append(GTK_BOX(box), GTK_WIDGET(*value));
-    return box;
-}
-
-static void add_spin_setting(GtkWidget *box, const gchar *title, GtkSpinButton *spin,
+static void add_spin_setting(AdwPreferencesGroup *group, const gchar *title, AdwSpinRow *spin,
                              guint command, guint control_bit, LaserConsole *console)
 {
-    GtkWidget *button = gtk_button_new_with_label("写入");
-    gtk_widget_add_css_class(button, "compact-button");
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(spin), title);
+    GtkButton *button = GTK_BUTTON(gtk_button_new_with_label("写入"));
     g_object_set_data(G_OBJECT(button), "spin", spin);
     g_object_set_data(G_OBJECT(button), "command", GUINT_TO_POINTER(command));
     g_object_set_data(G_OBJECT(button), "control-bit", GUINT_TO_POINTER(control_bit));
@@ -779,28 +740,37 @@ static void add_spin_setting(GtkWidget *box, const gchar *title, GtkSpinButton *
     if (console->write_buttons != NULL) {
         g_ptr_array_add(console->write_buttons, button);
     }
-    gtk_box_append(GTK_BOX(box), make_value_row(title, GTK_WIDGET(spin), button));
+    adw_action_row_add_suffix(ADW_ACTION_ROW(spin), GTK_WIDGET(button));
+    adw_preferences_group_add(group, GTK_WIDGET(spin));
 }
 
-static GtkCheckButton *add_control_option(GtkWidget *grid, const gchar *title, guint column, guint row,
-                                          guint bit, LaserConsole *console)
+static GtkCheckButton *add_control_option(AdwPreferencesGroup *group, const gchar *title,
+                                           guint bit, LaserConsole *console)
 {
-    GtkCheckButton *button = GTK_CHECK_BUTTON(gtk_check_button_new_with_label(title));
+    GtkCheckButton *button = GTK_CHECK_BUTTON(gtk_check_button_new());
     g_object_set_data(G_OBJECT(button), "control-bit", GUINT_TO_POINTER(bit));
     g_signal_connect(button, "toggled", G_CALLBACK(control_option_toggled), console);
-    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(button), column, row, 1, 1);
+    AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+    adw_action_row_add_suffix(row, GTK_WIDGET(button));
+    adw_action_row_set_activatable_widget(row, GTK_WIDGET(button));
+    adw_preferences_group_add(group, GTK_WIDGET(row));
     return button;
 }
 
-static GtkCheckButton *add_mask_option(GtkWidget *grid, const gchar *title, guint column, guint row,
+static GtkCheckButton *add_mask_option(AdwPreferencesGroup *group, const gchar *title,
                                        guint command, guint bit, guint source, LaserConsole *console)
 {
-    GtkCheckButton *button = GTK_CHECK_BUTTON(gtk_check_button_new_with_label(title));
+    GtkCheckButton *button = GTK_CHECK_BUTTON(gtk_check_button_new());
     g_object_set_data(G_OBJECT(button), "mask-command", GUINT_TO_POINTER(command));
     g_object_set_data(G_OBJECT(button), "mask-bit", GUINT_TO_POINTER(bit));
     g_object_set_data(G_OBJECT(button), "mask-source", GUINT_TO_POINTER(source));
     g_signal_connect(button, "toggled", G_CALLBACK(mask_option_toggled), console);
-    gtk_grid_attach(GTK_GRID(grid), GTK_WIDGET(button), column, row, 1, 1);
+    AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+    adw_action_row_add_suffix(row, GTK_WIDGET(button));
+    adw_action_row_set_activatable_widget(row, GTK_WIDGET(button));
+    adw_preferences_group_add(group, GTK_WIDGET(row));
     return button;
 }
 
@@ -808,63 +778,61 @@ static GtkWidget *build_control_page(LaserConsole *console)
 {
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
-    gtk_widget_set_margin_start(page, 20);
-    gtk_widget_set_margin_end(page, 20);
-    gtk_widget_set_margin_top(page, 20);
-    gtk_widget_set_margin_bottom(page, 20);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), page);
+    AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+    adw_preferences_page_set_title(page, "控制台");
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(page));
     console->control_page = scroll;
 
-    GtkWidget *safety_box;
-    GtkWidget *safety_card = make_card("输出许可", &safety_box);
-    GtkWidget *warning = gtk_label_new("1064 nm 为不可见 IV 级激光。确认防护区域、联锁和护目镜状态后，才启用输出按钮。即使设为 0%，输出端仍可能有约 100 mW 激光。");
-    gtk_label_set_wrap(GTK_LABEL(warning), TRUE);
-    gtk_label_set_xalign(GTK_LABEL(warning), 0.0f);
-    gtk_widget_add_css_class(warning, "warning-panel");
-    gtk_box_append(GTK_BOX(safety_box), warning);
-    console->safety_ack = GTK_CHECK_BUTTON(gtk_check_button_new_with_label("已确认防护区域和联锁状态"));
-    gtk_box_append(GTK_BOX(safety_box), GTK_WIDGET(console->safety_ack));
+    AdwPreferencesGroup *safety_group = make_group("输出许可");
+    adw_preferences_group_set_description(
+        safety_group,
+        "1064 nm 为不可见 IV 级激光。确认防护区域、联锁和护目镜状态后，才启用输出按钮。即使设为 0%，输出端仍可能有约 100 mW 激光。");
+    AdwActionRow *safety_row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(safety_row), "已确认防护区域和联锁状态");
+    console->safety_ack = GTK_CHECK_BUTTON(gtk_check_button_new());
+    adw_action_row_add_suffix(safety_row, GTK_WIDGET(console->safety_ack));
+    adw_action_row_set_activatable_widget(safety_row, GTK_WIDGET(console->safety_ack));
     g_signal_connect(console->safety_ack, "toggled", G_CALLBACK(safety_changed), console);
-    gtk_box_append(GTK_BOX(page), safety_card);
+    adw_preferences_group_add(safety_group, GTK_WIDGET(safety_row));
+    adw_preferences_page_add(page, safety_group);
 
-    GtkWidget *parameter_box;
-    GtkWidget *parameter_card = make_card("实时参数写入", &parameter_box);
+    AdwPreferencesGroup *parameter_group = make_group("实时参数写入");
     console->power_spin = make_spin(0, 100, 1, 0);
     console->frequency_spin = make_spin(1, 4000, 1, 100);
     console->pulse_spin = make_spin(1, 500, 1, 20);
     console->simmer_spin = make_spin(0, 1000, 1, 0);
-    add_spin_setting(parameter_box, "功率 (%)", console->power_spin, JPT_CMD_POWER, 4, console);
-    add_spin_setting(parameter_box, "频率 (kHz)", console->frequency_spin, JPT_CMD_FREQUENCY, 3, console);
-    add_spin_setting(parameter_box, "脉宽 (ns)", console->pulse_spin, JPT_CMD_PULSE_WIDTH, 2, console);
-    add_spin_setting(parameter_box, "Simmer", console->simmer_spin, JPT_CMD_SIMMER, G_MAXUINT, console);
-    GtkWidget *apply_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
-    gtk_widget_set_halign(apply_row, GTK_ALIGN_END);
-    console->apply_parameters_button = GTK_BUTTON(gtk_button_new());
-    GtkWidget *apply_content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
-    gtk_box_append(GTK_BOX(apply_content), gtk_image_new_from_icon_name("document-save-symbolic"));
-    gtk_box_append(GTK_BOX(apply_content), gtk_label_new("应用实时参数"));
-    gtk_button_set_child(console->apply_parameters_button, apply_content);
+    add_spin_setting(parameter_group, "功率 (%)", console->power_spin, JPT_CMD_POWER, 4, console);
+    add_spin_setting(parameter_group, "频率 (kHz)", console->frequency_spin, JPT_CMD_FREQUENCY, 3, console);
+    add_spin_setting(parameter_group, "脉宽 (ns)", console->pulse_spin, JPT_CMD_PULSE_WIDTH, 2, console);
+    add_spin_setting(parameter_group, "Simmer", console->simmer_spin, JPT_CMD_SIMMER, G_MAXUINT, console);
+    console->apply_parameters_button = GTK_BUTTON(gtk_button_new_with_label("应用实时参数"));
+    gtk_button_set_icon_name(console->apply_parameters_button, "document-save-symbolic");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(console->apply_parameters_button), "应用实时参数");
     gtk_widget_add_css_class(GTK_WIDGET(console->apply_parameters_button), "suggested-action");
     g_signal_connect(console->apply_parameters_button, "clicked",
                      G_CALLBACK(apply_parameters_clicked), console);
-    gtk_box_append(GTK_BOX(apply_row), GTK_WIDGET(console->apply_parameters_button));
-    gtk_box_append(GTK_BOX(parameter_box), apply_row);
-    gtk_box_append(GTK_BOX(page), parameter_card);
+    adw_preferences_group_set_header_suffix(parameter_group,
+                                             GTK_WIDGET(console->apply_parameters_button));
+    adw_preferences_page_add(page, parameter_group);
 
-    GtkWidget *output_box;
-    GtkWidget *output_card = make_card("控制信号", &output_box);
-    GtkWidget *mode_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    AdwPreferencesGroup *output_group = make_group("控制信号");
+    AdwActionRow *mode_row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(mode_row), "控制来源模式");
+    GtkWidget *mode_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
     console->free_mode = GTK_CHECK_BUTTON(gtk_check_button_new_with_label("自由控制"));
     console->gui_mode = GTK_CHECK_BUTTON(gtk_check_button_new_with_label("GUI 全控"));
     gtk_check_button_set_group(console->gui_mode, console->free_mode);
     gtk_check_button_set_active(console->free_mode, TRUE);
-    gtk_box_append(GTK_BOX(mode_row), GTK_WIDGET(console->free_mode));
-    gtk_box_append(GTK_BOX(mode_row), GTK_WIDGET(console->gui_mode));
+    gtk_box_append(GTK_BOX(mode_box), GTK_WIDGET(console->free_mode));
+    gtk_box_append(GTK_BOX(mode_box), GTK_WIDGET(console->gui_mode));
+    adw_action_row_add_suffix(mode_row, mode_box);
     g_signal_connect(console->free_mode, "toggled", G_CALLBACK(mode_toggled), console);
     g_signal_connect(console->gui_mode, "toggled", G_CALLBACK(mode_toggled), console);
-    gtk_box_append(GTK_BOX(output_box), mode_row);
-    GtkWidget *button_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
+    adw_preferences_group_add(output_group, GTK_WIDGET(mode_row));
+
+    AdwActionRow *output_row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(output_row), "输出控制");
+    GtkWidget *output_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
     console->laser_button = GTK_BUTTON(gtk_button_new_with_label("开启激光"));
     console->red_button = GTK_BUTTON(gtk_button_new_with_label("开启红光"));
     console->mo_button = GTK_BUTTON(gtk_button_new_with_label("开启 MO"));
@@ -874,59 +842,54 @@ static GtkWidget *build_control_page(LaserConsole *console)
     g_signal_connect(console->laser_button, "clicked", G_CALLBACK(output_button_clicked), console);
     g_signal_connect(console->red_button, "clicked", G_CALLBACK(output_button_clicked), console);
     g_signal_connect(console->mo_button, "clicked", G_CALLBACK(output_button_clicked), console);
-    gtk_box_append(GTK_BOX(button_row), GTK_WIDGET(console->laser_button));
-    gtk_box_append(GTK_BOX(button_row), GTK_WIDGET(console->red_button));
-    gtk_box_append(GTK_BOX(button_row), GTK_WIDGET(console->mo_button));
-    gtk_box_append(GTK_BOX(output_box), button_row);
-    gtk_box_append(GTK_BOX(page), output_card);
+    gtk_box_append(GTK_BOX(output_box), GTK_WIDGET(console->laser_button));
+    gtk_box_append(GTK_BOX(output_box), GTK_WIDGET(console->red_button));
+    gtk_box_append(GTK_BOX(output_box), GTK_WIDGET(console->mo_button));
+    adw_action_row_add_suffix(output_row, output_box);
+    adw_preferences_group_add(output_group, GTK_WIDGET(output_row));
+    adw_preferences_page_add(page, output_group);
 
-    GtkWidget *control_box;
-    GtkWidget *control_card = make_card("控制来源", &control_box);
-    GtkWidget *control_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(control_grid), 8);
-    gtk_grid_set_column_spacing(GTK_GRID(control_grid), 18);
+    AdwPreferencesGroup *control_group = make_group("控制来源");
     const gchar *control_names[] = {"GUI MO", "GUI PA", "GUI 脉宽", "GUI 频率", "GUI 功率"};
     for (guint i = 0; i < G_N_ELEMENTS(control_names); i++) {
-        console->control_options[i] = add_control_option(control_grid, control_names[i], i, 0, i, console);
+        console->control_options[i] = add_control_option(control_group, control_names[i], i, console);
     }
-    gtk_box_append(GTK_BOX(control_box), control_grid);
-    gtk_box_append(GTK_BOX(page), control_card);
+    adw_preferences_page_add(page, control_group);
 
-    GtkWidget *options_box;
-    GtkWidget *options_card = make_card("控制与锁定选项", &options_box);
-    GtkWidget *options_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(options_grid), 8);
-    gtk_grid_set_column_spacing(GTK_GRID(options_grid), 18);
+    AdwPreferencesGroup *options_group = make_group("控制与锁定选项");
     const gchar *parameter_names[] = {
         "Pin9 功率锁存", "Pin23 急停", "外部频率", "风扇调速", "红光模式", "增强模式"
     };
     const guint parameter_bits[] = {0, 1, 3, 4, 5, 6};
     for (guint i = 0; i < G_N_ELEMENTS(parameter_names); i++) {
-        console->parameter_options[i] = add_mask_option(options_grid, parameter_names[i],
-                                                         i % 3, i / 3, JPT_CMD_PARAMETER_SELECT,
-                                                         parameter_bits[i], 0, console);
+        console->parameter_options[i] = add_mask_option(options_group, parameter_names[i],
+                                                        JPT_CMD_PARAMETER_SELECT,
+                                                        parameter_bits[i], 0, console);
     }
     const gchar *lock_names[] = {"锁定频率", "锁定功率"};
     for (guint i = 0; i < G_N_ELEMENTS(lock_names); i++) {
-        console->lock_options[i] = add_mask_option(options_grid, lock_names[i], i, 2,
+        console->lock_options[i] = add_mask_option(options_group, lock_names[i],
                                                    JPT_CMD_LOCK_PARAMETER, i, 1, console);
     }
-    gtk_box_append(GTK_BOX(options_box), options_grid);
-    gtk_box_append(GTK_BOX(page), options_card);
+    adw_preferences_page_add(page, options_group);
 
-    GtkWidget *default_box;
-    GtkWidget *default_card = make_card("默认参数", &default_box);
+    AdwPreferencesGroup *default_group = make_group("默认参数");
     console->default_frequency_spin = make_spin(1, 4000, 1, 100);
     console->default_pulse_spin = make_spin(1, 500, 1, 20);
     console->default_simmer_spin = make_spin(0, 1000, 1, 0);
     console->lock_power_spin = make_spin(0, 100, 1, 0);
     console->red_power_spin = make_spin(0, 100, 1, 0);
-    add_spin_setting(default_box, "锁定频率 (kHz)", console->default_frequency_spin, JPT_CMD_LOCK_FREQUENCY, G_MAXUINT, console);
-    add_spin_setting(default_box, "默认脉宽 (ns)", console->default_pulse_spin, JPT_CMD_DEFAULT_PULSE_WIDTH, G_MAXUINT, console);
-    add_spin_setting(default_box, "默认 Simmer", console->default_simmer_spin, JPT_CMD_DEFAULT_SIMMER, G_MAXUINT, console);
-    add_spin_setting(default_box, "锁定功率 (%)", console->lock_power_spin, JPT_CMD_LOCK_POWER, G_MAXUINT, console);
-    add_spin_setting(default_box, "红光功率 (%)", console->red_power_spin, JPT_CMD_RED_LIGHT_POWER, G_MAXUINT, console);
-    gtk_box_append(GTK_BOX(page), default_card);
+    add_spin_setting(default_group, "锁定频率 (kHz)", console->default_frequency_spin,
+                     JPT_CMD_LOCK_FREQUENCY, G_MAXUINT, console);
+    add_spin_setting(default_group, "默认脉宽 (ns)", console->default_pulse_spin,
+                     JPT_CMD_DEFAULT_PULSE_WIDTH, G_MAXUINT, console);
+    add_spin_setting(default_group, "默认 Simmer", console->default_simmer_spin,
+                     JPT_CMD_DEFAULT_SIMMER, G_MAXUINT, console);
+    add_spin_setting(default_group, "锁定功率 (%)", console->lock_power_spin,
+                     JPT_CMD_LOCK_POWER, G_MAXUINT, console);
+    add_spin_setting(default_group, "红光功率 (%)", console->red_power_spin,
+                     JPT_CMD_RED_LIGHT_POWER, G_MAXUINT, console);
+    adw_preferences_page_add(page, default_group);
 
     update_output_buttons(console);
     return scroll;
@@ -936,101 +899,90 @@ static GtkWidget *build_monitor_page(LaserConsole *console)
 {
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    GtkWidget *page = gtk_box_new(GTK_ORIENTATION_VERTICAL, 14);
-    gtk_widget_set_margin_start(page, 20);
-    gtk_widget_set_margin_end(page, 20);
-    gtk_widget_set_margin_top(page, 20);
-    gtk_widget_set_margin_bottom(page, 20);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), page);
+    AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+    adw_preferences_page_set_title(page, "监控");
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(page));
 
-    GtkWidget *metrics_box;
-    GtkWidget *metrics_card = make_card("实时监控", &metrics_box);
-    GtkWidget *metrics_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(metrics_grid), 12);
-    gtk_grid_set_column_spacing(GTK_GRID(metrics_grid), 20);
-    GtkWidget *metrics[] = {
-        make_metric("实时功率", &console->real_power_label),
-        make_metric("实时频率", &console->real_frequency_label),
-        make_metric("实时脉宽", &console->real_pulse_label),
-        make_metric("传感器 1", &console->sensor_1_label),
-        make_metric("传感器 2", &console->sensor_2_label),
-        make_metric("种子源 TEC", &console->tec_label),
-        make_metric("输出电流", &console->current_label),
-        make_metric("SN", &console->serial_label),
+    AdwPreferencesGroup *metrics_group = make_group("实时监控");
+    const struct {
+        const gchar *title;
+        GtkLabel **value;
+    } metrics[] = {
+        {"实时功率", &console->real_power_label},
+        {"实时频率", &console->real_frequency_label},
+        {"实时脉宽", &console->real_pulse_label},
+        {"传感器 1", &console->sensor_1_label},
+        {"传感器 2", &console->sensor_2_label},
+        {"种子源 TEC", &console->tec_label},
+        {"输出电流", &console->current_label},
+        {"SN", &console->serial_label},
     };
     for (guint i = 0; i < G_N_ELEMENTS(metrics); i++) {
-        gtk_grid_attach(GTK_GRID(metrics_grid), metrics[i], i % 4, i / 4, 1, 1);
+        adw_preferences_group_add(metrics_group,
+                                   GTK_WIDGET(make_property_row(metrics[i].title, metrics[i].value)));
     }
-    gtk_box_append(GTK_BOX(metrics_box), metrics_grid);
+    AdwActionRow *power_row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(power_row), "功率水平");
     console->power_bar = GTK_PROGRESS_BAR(gtk_progress_bar_new());
     gtk_progress_bar_set_show_text(console->power_bar, TRUE);
     gtk_progress_bar_set_text(console->power_bar, "实时功率");
-    gtk_box_append(GTK_BOX(metrics_box), GTK_WIDGET(console->power_bar));
-    gtk_box_append(GTK_BOX(page), metrics_card);
+    gtk_widget_set_size_request(GTK_WIDGET(console->power_bar), 260, -1);
+    adw_action_row_add_suffix(power_row, GTK_WIDGET(console->power_bar));
+    adw_preferences_group_add(metrics_group, GTK_WIDGET(power_row));
+    adw_preferences_page_add(page, metrics_group);
 
-    GtkWidget *signal_box;
-    GtkWidget *signal_card = make_card("信号状态", &signal_box);
-    GtkWidget *signal_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(signal_grid), 8);
-    gtk_grid_set_column_spacing(GTK_GRID(signal_grid), 24);
+    AdwPreferencesGroup *signal_group = make_group("信号状态");
     const gchar *signal_names[] = {"PA", "MO", "红光", "泵浦"};
     for (guint i = 0; i < G_N_ELEMENTS(signal_names); i++) {
-        GtkWidget *label = gtk_label_new(signal_names[i]);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
+        AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), signal_names[i]);
         console->status_indicators[i] = GTK_LABEL(gtk_label_new("关闭"));
         gtk_widget_add_css_class(GTK_WIDGET(console->status_indicators[i]), "dim-label");
-        gtk_grid_attach(GTK_GRID(signal_grid), label, 0, i, 1, 1);
-        gtk_grid_attach(GTK_GRID(signal_grid), GTK_WIDGET(console->status_indicators[i]), 1, i, 1, 1);
+        adw_action_row_add_suffix(row, GTK_WIDGET(console->status_indicators[i]));
+        adw_preferences_group_add(signal_group, GTK_WIDGET(row));
     }
-    GtkWidget *protocol_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(protocol_grid), 8);
-    gtk_grid_set_column_spacing(GTK_GRID(protocol_grid), 24);
-    const gchar *protocol_names[] = {"控制模式", "状态字", "报警字"};
-    GtkLabel **protocol_values[] = {&console->control_mode_label, &console->status_label, &console->alarm_state_label};
-    for (guint i = 0; i < G_N_ELEMENTS(protocol_names); i++) {
-        GtkWidget *label = gtk_label_new(protocol_names[i]);
-        gtk_label_set_xalign(GTK_LABEL(label), 0.0f);
-        *protocol_values[i] = GTK_LABEL(gtk_label_new("--"));
-        gtk_grid_attach(GTK_GRID(protocol_grid), label, 0, i, 1, 1);
-        gtk_grid_attach(GTK_GRID(protocol_grid), GTK_WIDGET(*protocol_values[i]), 1, i, 1, 1);
-    }
-    GtkWidget *signal_row = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 30);
-    gtk_box_append(GTK_BOX(signal_row), signal_grid);
-    gtk_box_append(GTK_BOX(signal_row), protocol_grid);
-    gtk_box_append(GTK_BOX(signal_box), signal_row);
-    GtkWidget *power_grid = gtk_grid_new();
-    gtk_grid_set_column_spacing(GTK_GRID(power_grid), 16);
-    GtkWidget *external_power_caption = gtk_label_new("DB25 功率输入");
-    gtk_widget_add_css_class(external_power_caption, "dim-label");
-    gtk_grid_attach(GTK_GRID(power_grid), external_power_caption, 0, 0, 1, 1);
-    console->external_power_label = GTK_LABEL(gtk_label_new("0 / 255  (0%)"));
-    gtk_grid_attach(GTK_GRID(power_grid), GTK_WIDGET(console->external_power_label), 1, 0, 1, 1);
-    for (guint i = 0; i < G_N_ELEMENTS(console->power_indicators); i++) {
-        console->power_indicators[i] = GTK_LABEL(gtk_label_new("D"));
-        gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), "dim-label");
-        gtk_grid_attach(GTK_GRID(power_grid), GTK_WIDGET(console->power_indicators[i]), i + 2, 0, 1, 1);
-    }
-    gtk_box_append(GTK_BOX(signal_box), power_grid);
-    gtk_box_append(GTK_BOX(page), signal_card);
 
-    GtkWidget *alarm_box;
-    GtkWidget *alarm_card = make_card("报警状态与计数", &alarm_box);
-    GtkWidget *alarm_grid = gtk_grid_new();
-    gtk_grid_set_row_spacing(GTK_GRID(alarm_grid), 7);
-    gtk_grid_set_column_spacing(GTK_GRID(alarm_grid), 20);
-    gtk_grid_attach(GTK_GRID(alarm_grid), gtk_label_new("项目"), 0, 0, 1, 1);
-    gtk_grid_attach(GTK_GRID(alarm_grid), gtk_label_new("状态"), 1, 0, 1, 1);
-    gtk_grid_attach(GTK_GRID(alarm_grid), gtk_label_new("累计"), 2, 0, 1, 1);
+    const gchar *protocol_names[] = {"控制模式", "状态字", "报警字"};
+    GtkLabel **protocol_values[] = {
+        &console->control_mode_label, &console->status_label, &console->alarm_state_label
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(protocol_names); i++) {
+        adw_preferences_group_add(signal_group,
+                                   GTK_WIDGET(make_property_row(protocol_names[i], protocol_values[i])));
+    }
+
+    AdwActionRow *external_power_row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(external_power_row), "DB25 功率输入");
+    console->external_power_label = GTK_LABEL(gtk_label_new("0 / 255  (0%)"));
+    adw_action_row_add_suffix(external_power_row, GTK_WIDGET(console->external_power_label));
+    adw_preferences_group_add(signal_group, GTK_WIDGET(external_power_row));
+    adw_preferences_page_add(page, signal_group);
+
+    AdwPreferencesGroup *input_group = make_group("DB25 输入");
+    for (guint i = 0; i < G_N_ELEMENTS(console->power_indicators); i++) {
+        AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+        gchar *title = g_strdup_printf("D%u", 7 - i);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
+        g_free(title);
+        console->power_indicators[i] = GTK_LABEL(gtk_label_new("0"));
+        gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), "dim-label");
+        adw_action_row_add_suffix(row, GTK_WIDGET(console->power_indicators[i]));
+        adw_preferences_group_add(input_group, GTK_WIDGET(row));
+    }
+    adw_preferences_page_add(page, input_group);
+
+    AdwPreferencesGroup *alarm_group = make_group("报警状态与计数");
     for (guint i = 0; i < G_N_ELEMENTS(alarm_names); i++) {
-        gtk_grid_attach(GTK_GRID(alarm_grid), gtk_label_new(alarm_names[i]), 0, i + 1, 1, 1);
+        AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), alarm_names[i]);
         console->alarm_indicators[i] = GTK_LABEL(gtk_label_new("关闭"));
         console->alarm_counts[i] = GTK_LABEL(gtk_label_new("0"));
         gtk_widget_add_css_class(GTK_WIDGET(console->alarm_indicators[i]), "dim-label");
-        gtk_grid_attach(GTK_GRID(alarm_grid), GTK_WIDGET(console->alarm_indicators[i]), 1, i + 1, 1, 1);
-        gtk_grid_attach(GTK_GRID(alarm_grid), GTK_WIDGET(console->alarm_counts[i]), 2, i + 1, 1, 1);
+        adw_action_row_add_suffix(row, GTK_WIDGET(console->alarm_indicators[i]));
+        adw_action_row_add_suffix(row, GTK_WIDGET(console->alarm_counts[i]));
+        adw_preferences_group_add(alarm_group, GTK_WIDGET(row));
     }
-    gtk_box_append(GTK_BOX(alarm_box), alarm_grid);
-    gtk_box_append(GTK_BOX(page), alarm_card);
+    adw_preferences_page_add(page, alarm_group);
     return scroll;
 }
 
@@ -1072,31 +1024,8 @@ static gboolean window_close_request(GtkWindow *window, gpointer user_data)
     return FALSE;
 }
 
-static void apply_css(void)
-{
-    AdwStyleManager *style_manager = adw_style_manager_get_default();
-    adw_style_manager_set_color_scheme(style_manager, ADW_COLOR_SCHEME_DEFAULT);
-    GtkCssProvider *provider = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(provider,
-        "* { font-family: \"Noto Sans CJK SC\", sans-serif; }"
-        ".page-title { font-size: 18px; font-weight: 700; }"
-        ".card { background: @card_bg_color; border: 1px solid @borders; border-radius: 10px; }"
-        ".card-title { font-size: 15px; font-weight: 700; }"
-        ".metric { background: @view_bg_color; border: 1px solid @borders; border-radius: 8px; padding: 10px; min-width: 132px; }"
-        ".metric-title { font-size: 12px; }"
-        ".metric-value { color: @window_fg_color; font-size: 16px; font-weight: 700; }"
-        ".value-row { min-height: 34px; }"
-        ".compact-button { min-width: 64px; }"
-        ".warning-panel { padding: 10px; border-radius: 7px; }"
-        ".state-muted { opacity: 0.55; }");
-    gtk_style_context_add_provider_for_display(gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
-                                               GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
-    g_object_unref(provider);
-}
-
 GtkWidget *laser_console_create(AdwApplication *application)
 {
-    apply_css();
     LaserConsole *console = g_new0(LaserConsole, 1);
     console->client = jpt_client_new(trace_callback, console);
     console->write_buttons = g_ptr_array_new();
@@ -1109,16 +1038,8 @@ GtkWidget *laser_console_create(AdwApplication *application)
     g_signal_connect(window, "close-request", G_CALLBACK(window_close_request), console);
 
     GtkWidget *header = adw_header_bar_new();
-    GtkWidget *title_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    GtkWidget *title = gtk_label_new("MS LEP");
-    gtk_widget_add_css_class(title, "page-title");
-    gtk_label_set_xalign(GTK_LABEL(title), 0.0f);
-    GtkWidget *subtitle = gtk_label_new("JPT YDFLP-E3-100-M7 调试控制台");
-    gtk_widget_add_css_class(subtitle, "metric-title");
-    gtk_label_set_xalign(GTK_LABEL(subtitle), 0.0f);
-    gtk_box_append(GTK_BOX(title_box), title);
-    gtk_box_append(GTK_BOX(title_box), subtitle);
-    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), title_box);
+    AdwWindowTitle *title = ADW_WINDOW_TITLE(adw_window_title_new("MS LEP", "JPT YDFLP-E3-100-M7 调试控制台"));
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(title));
 
     GtkWidget *connection_box = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 7);
     GtkStringList *transport_model = gtk_string_list_new((const gchar *[]){"串口", "TCP", NULL});
@@ -1142,24 +1063,24 @@ GtkWidget *laser_console_create(AdwApplication *application)
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), GTK_WIDGET(console->emergency_button));
 
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
-    gtk_widget_add_css_class(status_bar, "card");
+    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     gtk_widget_set_margin_start(status_bar, 16);
     gtk_widget_set_margin_end(status_bar, 16);
-    gtk_widget_set_margin_top(status_bar, 12);
-    gtk_widget_set_margin_bottom(status_bar, 4);
-    GtkWidget *connection_status = make_status_item("未连接", &console->connection_indicator,
-                                                    &console->connection_label);
-    GtkWidget *device_status = make_status_item("报警状态未知", &console->device_indicator,
-                                                &console->device_status_label);
-    GtkWidget *command_status = make_status_item("等待命令", &console->command_indicator,
-                                                 &console->last_command_label);
-    console->serial_status_label = GTK_LABEL(gtk_label_new("设备 SN：未读取"));
-    console->last_error_label = GTK_LABEL(gtk_label_new(""));
-    gtk_box_append(GTK_BOX(status_bar), connection_status);
-    gtk_box_append(GTK_BOX(status_bar), device_status);
+    gtk_widget_set_margin_top(status_bar, 10);
+    gtk_widget_set_margin_bottom(status_bar, 8);
+    gtk_box_append(GTK_BOX(status_bar),
+                   make_status_item("连接", "未连接", &console->connection_indicator,
+                                    &console->connection_label));
+    gtk_box_append(GTK_BOX(status_bar),
+                   make_status_item("设备", "报警状态未知", &console->device_indicator,
+                                    &console->device_status_label));
+    console->serial_status_label = GTK_LABEL(gtk_label_new("SN：未读取"));
+    gtk_widget_add_css_class(GTK_WIDGET(console->serial_status_label), "dim-label");
     gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->serial_status_label));
-    gtk_box_append(GTK_BOX(status_bar), command_status);
+    gtk_box_append(GTK_BOX(status_bar),
+                   make_status_item("命令", "等待命令", &console->command_indicator,
+                                    &console->last_command_label));
+    console->last_error_label = GTK_LABEL(gtk_label_new(""));
     gtk_widget_set_hexpand(GTK_WIDGET(console->last_error_label), TRUE);
     gtk_label_set_xalign(console->last_error_label, 1.0f);
     gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->last_error_label));
