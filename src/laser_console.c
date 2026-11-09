@@ -32,7 +32,7 @@ struct _LaserConsole {
     GtkWidget *connection_indicator;
     GtkWidget *device_indicator;
     GtkWidget *command_indicator;
-    AdwComboRow *transport_mode_row;
+    GtkDropDown *transport_dropdown;
     GtkDropDown *serial_port_dropdown;
     GtkStringList *serial_port_model;
     GtkEntry *manual_serial_entry;
@@ -284,7 +284,7 @@ static void refresh_serial_ports(LaserConsole *console)
 
 static void update_transport_controls(LaserConsole *console)
 {
-    gboolean serial = adw_combo_row_get_selected(console->transport_mode_row) == 0;
+    gboolean serial = gtk_drop_down_get_selected(console->transport_dropdown) == 0;
     guint selected = gtk_drop_down_get_selected(console->serial_port_dropdown);
     gboolean manual = selected == console->serial_ports->len + 1;
     gtk_widget_set_visible(console->serial_controls, serial);
@@ -475,9 +475,9 @@ static void build_connection_page(LaserConsole *console)
 
     AdwPreferencesGroup *connection_group = make_group("设备连接");
     gtk_widget_set_hexpand(GTK_WIDGET(connection_group), TRUE);
-    gtk_widget_add_css_class(GTK_WIDGET(console->transport_mode_row), "connection-form-row");
-    adw_preferences_group_add(connection_group,
-                              GTK_WIDGET(console->transport_mode_row));
+    AdwActionRow *transport_row = make_widget_row("连接方式", GTK_WIDGET(console->transport_dropdown));
+    gtk_widget_add_css_class(GTK_WIDGET(transport_row), "connection-form-row");
+    adw_preferences_group_add(connection_group, GTK_WIDGET(transport_row));
     console->serial_device_row = GTK_WIDGET(make_widget_row("串口设备", console->serial_controls));
     gtk_widget_add_css_class(console->serial_device_row, "connection-form-row");
     adw_preferences_group_add(connection_group, console->serial_device_row);
@@ -635,7 +635,7 @@ static void update_output_buttons(LaserConsole *console)
     gtk_widget_set_sensitive(GTK_WIDGET(console->disconnect_button), ready);
     gtk_widget_set_visible(GTK_WIDGET(console->disconnect_button), ready);
     gboolean selecting_endpoint = !console->connected && !console->connection_pending;
-    gtk_widget_set_sensitive(GTK_WIDGET(console->transport_mode_row), selecting_endpoint);
+    gtk_widget_set_sensitive(GTK_WIDGET(console->transport_dropdown), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->serial_port_dropdown), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->refresh_serial_button), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->select_serial_button), selecting_endpoint);
@@ -900,7 +900,7 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
         return;
     }
 
-    gboolean serial = adw_combo_row_get_selected(console->transport_mode_row) == 0;
+    gboolean serial = gtk_drop_down_get_selected(console->transport_dropdown) == 0;
     const gchar *endpoint = gtk_editable_get_text(GTK_EDITABLE(console->endpoint_entry));
     if (serial) {
         guint selected = gtk_drop_down_get_selected(console->serial_port_dropdown);
@@ -1505,8 +1505,10 @@ GtkWidget *laser_console_create(AdwApplication *application)
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), GTK_WIDGET(console->emergency_button));
 
     const gchar *transport_options[] = {"串口", "TCP", NULL};
-    console->transport_mode_row = make_combo_row("连接方式", transport_options, 0);
-    g_signal_connect(console->transport_mode_row, "notify::selected",
+    console->transport_dropdown = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(transport_options));
+    gtk_drop_down_set_selected(console->transport_dropdown, 0);
+    gtk_widget_set_size_request(GTK_WIDGET(console->transport_dropdown), 160, 44);
+    g_signal_connect(console->transport_dropdown, "notify::selected",
                      G_CALLBACK(transport_mode_changed), console);
 
     console->serial_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
