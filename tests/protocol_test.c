@@ -75,6 +75,28 @@ static void test_encode_rejects_oversized_payload(void)
     g_clear_error(&error);
 }
 
+static void test_encode_tcp_address_update(void)
+{
+    const guint8 ip[] = {192, 168, 0, 10};
+    const guint8 expected_ip[] = {0x24, 0x6e, 0x00, 0x04, 192, 168, 0, 10, 0x2a};
+    const guint8 expected_port[] = {0x24, 0x6f, 0x00, 0x02, 0x88, 0x13, 0x2a};
+    GError *error = NULL;
+    GBytes *frame = jpt_frame_encode(JPT_CMD_IP_ADDRESS, ip, sizeof(ip), &error);
+    g_assert_no_error(error);
+    gsize length = 0;
+    const guint8 *actual = g_bytes_get_data(frame, &length);
+    g_assert_cmpuint(length, ==, sizeof(expected_ip));
+    g_assert_cmpmem(actual, length, expected_ip, sizeof(expected_ip));
+    g_bytes_unref(frame);
+
+    frame = jpt_device_u16_request(JPT_CMD_TCP_PORT, 5000, &error);
+    g_assert_no_error(error);
+    actual = g_bytes_get_data(frame, &length);
+    g_assert_cmpuint(length, ==, sizeof(expected_port));
+    g_assert_cmpmem(actual, length, expected_port, sizeof(expected_port));
+    g_bytes_unref(frame);
+}
+
 static void test_decode_status_db25_power(void)
 {
     JptTelemetry telemetry = {0};
@@ -91,6 +113,7 @@ int main(int argc, char **argv)
     g_test_add_func("/protocol/parser/fragmented-sn", test_parser_fragmented_sn_reply);
     g_test_add_func("/protocol/parser/coalesced-frames", test_parser_coalesced_frames_and_noise);
     g_test_add_func("/protocol/encode/oversized-payload", test_encode_rejects_oversized_payload);
+    g_test_add_func("/protocol/encode/tcp-address-update", test_encode_tcp_address_update);
     g_test_add_func("/device/status/db25-power", test_decode_status_db25_power);
     return g_test_run();
 }
