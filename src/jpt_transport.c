@@ -122,7 +122,28 @@ void jpt_transport_init(JptTransport *transport)
     transport->timeout_ms = 750;
 }
 
-gboolean jpt_transport_connect_serial(JptTransport *transport, const gchar *path, GError **error)
+static speed_t serial_baud_to_speed(guint baud_rate, GError **error)
+{
+    switch (baud_rate) {
+    case 9600:
+        return B9600;
+    case 19200:
+        return B19200;
+    case 38400:
+        return B38400;
+    case 57600:
+        return B57600;
+    case 115200:
+        return B115200;
+    default:
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                    "Unsupported serial baud rate: %u", baud_rate);
+        return B0;
+    }
+}
+
+gboolean jpt_transport_connect_serial(JptTransport *transport, const gchar *path,
+                                      const JptSerialConfig *config, GError **error)
 {
     jpt_transport_disconnect(transport);
 
@@ -142,15 +163,72 @@ gboolean jpt_transport_connect_serial(JptTransport *transport, const gchar *path
         return FALSE;
     }
 
-    settings.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL | IXON);
+    speed_t speed = serial_baud_to_speed(config->baud_rate, error);
+    if (speed == B0) {
+        close(fd);
+        return FALSE;
+    }
+
+    settings.c_iflag &= ~(IGNBRK | BRKINT | PARMRK | ISTRIP | INLCR | IGNCR | ICRNL |
+                          IXON | IXOFF | IXANY | INPCK | IGNPAR);
     settings.c_oflag &= ~OPOST;
     settings.c_lflag &= ~(ECHO | ECHONL | ICANON | ISIG | IEXTEN);
-    cfsetispeed(&settings, B57600);
-    cfsetospeed(&settings, B57600);
-    settings.c_cflag &= ~(CSIZE | PARENB | CSTOPB);
-    settings.c_cflag |= CS8 | CLOCAL | CREAD;
+    cfsetispeed(&settings, speed);
+    cfsetospeed(&settings, speed);
+    settings.c_cflag &= ~(CSIZE | PARENB | PARODD | CSTOPB);
+    switch (config->data_bits) {
+    case 5:
+        settings.c_cflag |= CS5;
+        break;
+    case 6:
+        settings.c_cflag |= CS6;
+        break;
+    case 7:
+        settings.c_cflag |= CS7;
+        break;
+    case 8:
+        settings.c_cflag |= CS8;
+        break;
+    default:
+        close(fd);
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                    "Unsupported serial data bits: %u", config->data_bits);
+        return FALSE;
+    }
+    if (config->parity == JPT_SERIAL_PARITY_EVEN) {
+        settings.c_cflag |= PARENB;
+        settings.c_iflag |= INPCK;
+    } else if (config->parity == JPT_SERIAL_PARITY_ODD) {
+        settings.c_cflag |= PARENB | PARODD;
+        settings.c_iflag |= INPCK;
+    } else if (config->parity != JPT_SERIAL_PARITY_NONE) {
+        close(fd);
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                    "Unsupported serial parity");
+        return FALSE;
+    }
+    if (config->stop_bits == 2) {
+        settings.c_cflag |= CSTOPB;
+    } else if (config->stop_bits != 1) {
+        close(fd);
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                    "Unsupported serial stop bits: %u", config->stop_bits);
+        return FALSE;
+    }
+    settings.c_cflag |= CLOCAL | CREAD;
 #ifdef CRTSCTS
-    settings.c_cflag &= ~CRTSCTS;
+    if (config->hardware_flow_control) {
+        settings.c_cflag |= CRTSCTS;
+    } else {
+        settings.c_cflag &= ~CRTSCTS;
+    }
+#else
+    if (config->hardware_flow_control) {
+        close(fd);
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_NOT_SUPPORTED,
+                    "Hardware serial flow control is not supported");
+        return FALSE;
+    }
 #endif
     settings.c_cc[VMIN] = 0;
     settings.c_cc[VTIME] = 0;

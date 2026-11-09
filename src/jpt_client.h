@@ -28,6 +28,7 @@ typedef void (*JptTraceCallback)(guint16 command, GBytes *transmitted, GBytes *r
 
 JptClient *jpt_client_new(JptTraceCallback trace_callback, gpointer trace_data);
 void jpt_client_connect_serial_async(JptClient *client, const gchar *path,
+                                     const JptSerialConfig *config,
                                      JptClientCallback callback, gpointer user_data);
 void jpt_client_connect_tcp_async(JptClient *client, const gchar *host, guint16 port,
                                   JptClientCallback callback, gpointer user_data);

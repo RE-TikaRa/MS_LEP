@@ -14,6 +14,7 @@ typedef struct {
     JptJobType type;
     gchar *address;
     guint16 port;
+    JptSerialConfig serial_config;
     guint16 command;
     GBytes *payload;
     JptClientCallback callback;
@@ -225,7 +226,8 @@ static gpointer worker_main(gpointer data)
         switch (job->type) {
         case JPT_JOB_CONNECT_SERIAL:
             result.type = JPT_CLIENT_CONNECTION;
-            result.connected = jpt_transport_connect_serial(&client->transport, job->address, &result.error);
+            result.connected = jpt_transport_connect_serial(&client->transport, job->address,
+                                                            &job->serial_config, &result.error);
             break;
         case JPT_JOB_CONNECT_TCP:
             result.type = JPT_CLIENT_CONNECTION;
@@ -297,10 +299,12 @@ JptClient *jpt_client_new(JptTraceCallback trace_callback, gpointer trace_data)
 }
 
 void jpt_client_connect_serial_async(JptClient *client, const gchar *path,
+                                     const JptSerialConfig *config,
                                      JptClientCallback callback, gpointer user_data)
 {
     JptJob *job = new_job(JPT_JOB_CONNECT_SERIAL, callback, user_data);
     job->address = g_strdup(path);
+    job->serial_config = *config;
     enqueue_job(client, job);
 }
 
