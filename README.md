@@ -23,6 +23,7 @@ MS_LEP 是 YDFLP-E3-100-M7 脉冲光纤激光器的 Linux 调试控制台，使�
 界面视觉与交互参考当前公开的 Apple Human Interface Guidelines、Material 3 Foundations、GNOME Human Interface Guidelines 和 Libadwaita Styles & Appearance：
 
 - 以控制台、监控、HEX 日志作为三个平坦主视图，侧边导航在窄窗口中可以收起，避免多层窗口和深层菜单。
+- 启动及断开状态只显示设备连接页；设备信息读取完成后再显示控制台、监控和 HEX 日志。
 - 连接状态、设备身份、最近命令和错误信息位于同一条状态区域，用户不需要切换页面寻找反馈。
 - 参数写入和输出操作保持明确的控件分组；不可用状态会随连接状态、控制来源和安全确认变化。
 - 页面分组、属性行、参数行、状态行和导航均使用 GTK4/Libadwaita 官方控件，遵循系统主题样式。

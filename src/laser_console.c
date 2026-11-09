@@ -12,6 +12,8 @@ static gboolean poll_tick(gpointer user_data);
 
 struct _LaserConsole {
     GtkWidget *window;
+    GtkStack *main_stack;
+    AdwStatusPage *connection_page;
     GtkWidget *control_page;
     GtkWidget *connection_indicator;
     GtkWidget *device_indicator;
@@ -205,6 +207,15 @@ static void set_connection_state(LaserConsole *console, const gchar *text, gbool
     set_status_item(console->connection_indicator, console->connection_label, text, style_class);
 }
 
+static void show_connection_page(LaserConsole *console, const gchar *title,
+                                 const gchar *description, const gchar *icon_name)
+{
+    adw_status_page_set_title(console->connection_page, title);
+    adw_status_page_set_description(console->connection_page, description);
+    adw_status_page_set_icon_name(console->connection_page, icon_name);
+    gtk_stack_set_visible_child_name(console->main_stack, "connection");
+}
+
 static void update_output_buttons(LaserConsole *console)
 {
     gboolean ready = console->connected && console->initialized;
@@ -216,6 +227,7 @@ static void update_output_buttons(LaserConsole *console)
     gtk_widget_set_sensitive(GTK_WIDGET(console->red_button), enabled);
     gtk_widget_set_sensitive(GTK_WIDGET(console->mo_button), enabled && gui_mo);
     gtk_widget_set_sensitive(GTK_WIDGET(console->emergency_button), ready);
+    gtk_widget_set_visible(GTK_WIDGET(console->emergency_button), ready);
     gtk_widget_set_sensitive(GTK_WIDGET(console->apply_parameters_button), ready);
     if (console->free_mode != NULL) {
         gtk_widget_set_sensitive(GTK_WIDGET(console->free_mode), ready);
@@ -360,6 +372,8 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             console->connected = TRUE;
             gtk_button_set_label(console->connect_button, "断开");
             set_connection_state(console, "正在读取设备", FALSE, FALSE);
+            show_connection_page(console, "正在读取设备", "连接已建立，正在读取激光器信息。",
+                                "network-wired-symbolic");
             append_log(console, "连接已建立，开始读取设备信息");
             console->initialized = FALSE;
             jpt_client_read_initial_async(console->client, result_callback, console);
@@ -367,6 +381,9 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             console->connected = FALSE;
             set_connection_state(console, result->error ? result->error->message : "连接失败", FALSE, TRUE);
             gtk_button_set_label(console->connect_button, "连接");
+            show_connection_page(console, "连接失败",
+                                 result->error ? result->error->message : "无法建立设备连接。",
+                                 "dialog-warning-symbolic");
             if (result->error != NULL) {
                 gtk_label_set_text(console->last_error_label, result->error->message);
             }
@@ -383,6 +400,9 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         console->initialized = FALSE;
         set_connection_state(console, "未连接", FALSE, FALSE);
         gtk_button_set_label(console->connect_button, "连接");
+        show_connection_page(console, "设备未连接",
+                             "选择串口或 TCP 地址并连接激光器。",
+                             "network-offline-symbolic");
         update_device_status(console);
         update_output_buttons(console);
         return;
@@ -400,6 +420,8 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
                 set_connection_state(console, "设备读取失败", FALSE, TRUE);
                 set_status_item(console->device_indicator, console->device_status_label,
                                 "设备读取失败", "error");
+                show_connection_page(console, "设备读取失败", result->error->message,
+                                     "dialog-warning-symbolic");
             }
             return;
         }
@@ -432,6 +454,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             console->updating_controls = FALSE;
             console->initialized = TRUE;
             set_connection_state(console, "已连接", TRUE, FALSE);
+            gtk_stack_set_visible_child_name(console->main_stack, "workbench");
         }
         update_device_status(console);
         update_output_buttons(console);
@@ -478,6 +501,8 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
         console->connected = FALSE;
         console->connection_pending = TRUE;
         set_connection_state(console, "正在断开", FALSE, FALSE);
+        show_connection_page(console, "正在断开连接", "正在关闭设备连接。",
+                             "network-offline-symbolic");
         update_device_status(console);
         update_output_buttons(console);
         jpt_client_disconnect_async(console->client, result_callback, console);
@@ -487,10 +512,15 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
     const gchar *endpoint = gtk_editable_get_text(GTK_EDITABLE(console->endpoint_entry));
     if (endpoint[0] == '\0') {
         set_connection_state(console, "请输入设备地址", FALSE, TRUE);
+        show_connection_page(console, "设备地址为空",
+                             "填写串口设备路径或 TCP 地址后再连接。",
+                             "dialog-warning-symbolic");
         return;
     }
     console->connection_pending = TRUE;
     set_connection_state(console, "正在连接", FALSE, FALSE);
+    show_connection_page(console, "正在连接设备", "正在建立设备连接。",
+                         "network-wired-symbolic");
     update_device_status(console);
     update_output_buttons(console);
     guint selected = gtk_drop_down_get_selected(console->transport_dropdown);
@@ -1062,6 +1092,17 @@ GtkWidget *laser_console_create(AdwApplication *application)
     g_signal_connect(console->emergency_button, "clicked", G_CALLBACK(emergency_clicked), console);
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), GTK_WIDGET(console->emergency_button));
 
+    console->main_stack = GTK_STACK(gtk_stack_new());
+    gtk_stack_set_transition_type(console->main_stack, GTK_STACK_TRANSITION_TYPE_CROSSFADE);
+    gtk_widget_set_hexpand(GTK_WIDGET(console->main_stack), TRUE);
+    gtk_widget_set_vexpand(GTK_WIDGET(console->main_stack), TRUE);
+    console->connection_page = ADW_STATUS_PAGE(adw_status_page_new());
+    adw_status_page_set_title(console->connection_page, "设备未连接");
+    adw_status_page_set_description(console->connection_page,
+                                    "选择串口或 TCP 地址并连接激光器。");
+    adw_status_page_set_icon_name(console->connection_page, "network-offline-symbolic");
+    gtk_stack_add_named(console->main_stack, GTK_WIDGET(console->connection_page), "connection");
+
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
     GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
     gtk_widget_set_margin_start(status_bar, 16);
@@ -1113,7 +1154,8 @@ GtkWidget *laser_console_create(AdwApplication *application)
     gtk_box_append(GTK_BOX(root), content);
     AdwToolbarView *toolbar_view = ADW_TOOLBAR_VIEW(adw_toolbar_view_new());
     adw_toolbar_view_add_top_bar(toolbar_view, header);
-    adw_toolbar_view_set_content(toolbar_view, root);
+    gtk_stack_add_named(console->main_stack, root, "workbench");
+    adw_toolbar_view_set_content(toolbar_view, GTK_WIDGET(console->main_stack));
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), GTK_WIDGET(toolbar_view));
     set_connection_state(console, "未连接", FALSE, FALSE);
     update_device_status(console);
