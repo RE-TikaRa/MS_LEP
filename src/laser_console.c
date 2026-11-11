@@ -34,6 +34,17 @@ static void show_sidebar_toggled(GtkToggleButton *button, gpointer user_data);
 static void navigation_page_changed(GObject *object, GParamSpec *pspec, gpointer user_data);
 static void alarm_history_buffer_changed(GtkTextBuffer *buffer, gpointer user_data);
 static void set_last_error(LaserConsole *console, const gchar *text);
+static void close_visible_popovers(GtkWidget *widget);
+static void show_connection_error(LaserConsole *console, const gchar *title, const gchar *message);
+static void shutdown_next(LaserConsole *console);
+static void shutdown_control_mode_callback(const JptClientResult *result, gpointer user_data);
+static void shutdown_write_callback(const JptClientResult *result, gpointer user_data);
+static void shutdown_verify_callback(const JptClientResult *result, gpointer user_data);
+static void shutdown_disconnect_callback(const JptClientResult *result, gpointer user_data);
+static void finish_shutdown(LaserConsole *console);
+static void begin_safe_shutdown(LaserConsole *console, gboolean close_window);
+static void read_shutdown_control_mode(LaserConsole *console);
+static void release_console(LaserConsole *console);
 
 struct _LaserConsole {
     GtkWidget *window;
@@ -60,7 +71,8 @@ struct _LaserConsole {
     GtkWidget *device_indicator;
     GtkWidget *command_indicator;
     GtkLabel *control_source_label;
-    GtkDropDown *transport_dropdown;
+    GtkToggleButton *serial_mode;
+    GtkToggleButton *tcp_mode;
     GtkDropDown *serial_port_dropdown;
     GtkStringList *serial_port_model;
     GtkEntry *manual_serial_entry;
@@ -129,6 +141,14 @@ struct _LaserConsole {
     GtkEntry *device_port_entry;
     GtkButton *apply_network_address_button;
     AdwPreferencesGroup *alarm_actions_group;
+    GtkWindow *shutdown_window;
+    GtkLabel *shutdown_label;
+    GString *shutdown_errors;
+    guint16 shutdown_commands[4];
+    const gchar *shutdown_command_names[4];
+    guint16 shutdown_verify_status_mask;
+    guint shutdown_command_count;
+    guint shutdown_command_index;
     AdwSpinRow *power_spin;
     AdwSpinRow *frequency_spin;
     AdwSpinRow *pulse_spin;
@@ -154,7 +174,12 @@ struct _LaserConsole {
     gboolean laser_on;
     gboolean red_on;
     gboolean mo_on;
+    gboolean command_error_active;
     gboolean alarm_history_initialized;
+    gboolean shutdown_in_progress;
+    gboolean shutdown_complete;
+    gboolean shutdown_close_window;
+    gboolean shutdown_verify_power;
     guint16 last_alarm_state;
 };
 
@@ -469,7 +494,7 @@ static void refresh_serial_ports(LaserConsole *console)
 
 static void update_transport_controls(LaserConsole *console)
 {
-    gboolean serial = gtk_drop_down_get_selected(console->transport_dropdown) == 0;
+    gboolean serial = gtk_toggle_button_get_active(console->serial_mode);
     guint selected = gtk_drop_down_get_selected(console->serial_port_dropdown);
     gboolean manual = selected == console->serial_ports->len + 1;
     gtk_stack_set_visible_child_name(console->endpoint_stack, serial ? "serial" : "tcp");
@@ -487,11 +512,31 @@ static void serial_port_selection_changed(GObject *object, GParamSpec *pspec, gp
     update_transport_controls(user_data);
 }
 
-static void transport_mode_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+static void close_visible_popovers(GtkWidget *widget)
 {
-    (void)object;
-    (void)pspec;
-    update_transport_controls(user_data);
+    if (GTK_IS_POPOVER(widget) && gtk_widget_get_visible(widget)) {
+        gtk_popover_popdown(GTK_POPOVER(widget));
+    }
+
+    for (GtkWidget *child = gtk_widget_get_first_child(widget);
+         child != NULL;
+         child = gtk_widget_get_next_sibling(child)) {
+        close_visible_popovers(child);
+    }
+}
+
+static void transport_mode_changed(GtkToggleButton *button, gpointer user_data)
+{
+    if (!gtk_toggle_button_get_active(button)) {
+        return;
+    }
+
+    LaserConsole *console = user_data;
+    GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(console->serial_port_dropdown));
+    if (root != NULL) {
+        close_visible_popovers(GTK_WIDGET(root));
+    }
+    update_transport_controls(console);
 }
 
 static void refresh_serial_clicked(GtkButton *button, gpointer user_data)
@@ -560,6 +605,15 @@ static void set_last_error(LaserConsole *console, const gchar *text)
     gtk_widget_remove_css_class(GTK_WIDGET(console->last_error_label), "error");
     gtk_widget_add_css_class(GTK_WIDGET(console->last_error_label),
                              text != NULL && text[0] != '\0' ? "error" : "dim-label");
+}
+
+static void show_connection_error(LaserConsole *console, const gchar *title, const gchar *message)
+{
+    AdwAlertDialog *dialog = ADW_ALERT_DIALOG(adw_alert_dialog_new(title, message));
+    adw_alert_dialog_add_response(dialog, "close", "确定");
+    adw_alert_dialog_set_default_response(dialog, "close");
+    adw_alert_dialog_set_close_response(dialog, "close");
+    adw_dialog_present(ADW_DIALOG(dialog), console->window);
 }
 
 static GtkWidget *make_status_item(const gchar *title, const gchar *text,
@@ -666,7 +720,22 @@ static void build_connection_page(LaserConsole *console)
 
     AdwPreferencesGroup *connection_group = make_group("设备连接");
     gtk_widget_set_hexpand(GTK_WIDGET(connection_group), TRUE);
-    AdwActionRow *transport_row = make_widget_row("连接方式", GTK_WIDGET(console->transport_dropdown));
+    GtkWidget *transport_group = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 0);
+    gtk_widget_add_css_class(transport_group, "linked");
+    console->serial_mode = GTK_TOGGLE_BUTTON(gtk_toggle_button_new_with_label("串口"));
+    console->tcp_mode = GTK_TOGGLE_BUTTON(gtk_toggle_button_new_with_label("TCP"));
+    gtk_toggle_button_set_group(console->tcp_mode, console->serial_mode);
+    gtk_toggle_button_set_active(console->serial_mode, TRUE);
+    gtk_widget_set_size_request(GTK_WIDGET(console->serial_mode), 80, 44);
+    gtk_widget_set_size_request(GTK_WIDGET(console->tcp_mode), 80, 44);
+    g_signal_connect(console->serial_mode, "toggled",
+                     G_CALLBACK(transport_mode_changed), console);
+    g_signal_connect(console->tcp_mode, "toggled",
+                     G_CALLBACK(transport_mode_changed), console);
+    gtk_box_append(GTK_BOX(transport_group), GTK_WIDGET(console->serial_mode));
+    gtk_box_append(GTK_BOX(transport_group), GTK_WIDGET(console->tcp_mode));
+
+    AdwActionRow *transport_row = make_widget_row("连接方式", transport_group);
     gtk_widget_add_css_class(GTK_WIDGET(transport_row), "connection-form-row");
     adw_preferences_group_add(connection_group, GTK_WIDGET(transport_row));
     console->endpoint_stack = GTK_STACK(gtk_stack_new());
@@ -812,8 +881,11 @@ static void sidebar_visibility_changed(GObject *object, GParamSpec *pspec, gpoin
 static void show_sidebar_toggled(GtkToggleButton *button, gpointer user_data)
 {
     LaserConsole *console = user_data;
-    adw_overlay_split_view_set_show_sidebar(
-        console->workbench_split_view, gtk_toggle_button_get_active(button));
+    gboolean show_sidebar = gtk_toggle_button_get_active(button);
+    const gchar *label = show_sidebar ? "隐藏导航" : "显示导航";
+    gtk_widget_set_tooltip_text(GTK_WIDGET(button), label);
+    gtk_accessible_update_property(GTK_ACCESSIBLE(button), GTK_ACCESSIBLE_PROPERTY_LABEL, label, -1);
+    adw_overlay_split_view_set_show_sidebar(console->workbench_split_view, show_sidebar);
 }
 
 static GtkWidget *make_navigation_row(const gchar *page_name, const gchar *title, const gchar *icon_name)
@@ -907,7 +979,8 @@ static void update_output_buttons(LaserConsole *console)
     gtk_widget_set_sensitive(GTK_WIDGET(console->disconnect_button), ready);
     gtk_widget_set_visible(GTK_WIDGET(console->disconnect_button), ready);
     gboolean selecting_endpoint = !console->connected && !console->connection_pending;
-    gtk_widget_set_sensitive(GTK_WIDGET(console->transport_dropdown), selecting_endpoint);
+    gtk_widget_set_sensitive(GTK_WIDGET(console->serial_mode), selecting_endpoint);
+    gtk_widget_set_sensitive(GTK_WIDGET(console->tcp_mode), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->serial_port_dropdown), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->refresh_serial_button), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->select_serial_button), selecting_endpoint);
@@ -1041,8 +1114,16 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         console->connection_pending = FALSE;
         if (result->connected) {
             console->connected = TRUE;
+            console->command_error_active = FALSE;
             set_last_error(console, NULL);
-            gtk_button_set_label(console->connect_button, "断开");
+            gtk_button_set_label(console->connect_button, "安全断开");
+            if (console->shutdown_in_progress) {
+                set_connection_state(console, "正在读取设备模式", FALSE, FALSE);
+                read_shutdown_control_mode(console);
+                update_device_status(console);
+                update_output_buttons(console);
+                return;
+            }
             set_connection_state(console, "正在读取设备", FALSE, FALSE);
             show_connection_page(console, "正在读取设备", "连接已建立，正在读取激光器信息。",
                                 "network-wired-symbolic");
@@ -1055,14 +1136,21 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             if (console->protocol_ack != NULL) {
                 gtk_check_button_set_active(console->protocol_ack, FALSE);
             }
-            set_connection_state(console, result->error ? result->error->message : "连接失败", FALSE, TRUE);
+            const gchar *message = result->error ? result->error->message : "无法建立设备连接。";
+            set_connection_state(console, "连接失败", FALSE, TRUE);
             gtk_button_set_label(console->connect_button, "连接");
-            show_connection_page(console, "连接失败",
-                                 result->error ? result->error->message : "无法建立设备连接。",
-                                 "dialog-warning-symbolic");
-            if (result->error != NULL) {
-                set_last_error(console, result->error->message);
+            if (console->shutdown_in_progress) {
+                if (!console->shutdown_close_window) {
+                    g_string_append_printf(console->shutdown_errors, "建立设备连接：%s\n", message);
+                }
+                finish_shutdown(console);
+                return;
             }
+            show_connection_page(console, "连接失败",
+                                 "检查设备地址、供电和通信线路后重试。",
+                                 "dialog-warning-symbolic");
+            set_last_error(console, NULL);
+            show_connection_error(console, "连接失败", message);
         }
         update_device_status(console);
         update_output_buttons(console);
@@ -1090,23 +1178,33 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
 
     if (result->type == JPT_CLIENT_TELEMETRY) {
         console->poll_pending = FALSE;
+        if (console->shutdown_in_progress) {
+            return;
+        }
         if (!console->connected) {
             return;
         }
         if (result->error != NULL) {
-            set_last_error(console, result->error->message);
+            if (!console->command_error_active) {
+                set_last_error(console, result->error->message);
+            }
             append_log(console, "轮询失败：%s", result->error->message);
             if (!console->initialized) {
                 set_connection_state(console, "设备读取失败", FALSE, TRUE);
                 set_status_item(console->device_indicator, console->device_status_label,
                                 "设备读取失败", "error");
-                show_connection_page(console, "设备读取失败", result->error->message,
+                show_connection_page(console, "设备读取失败",
+                                     "检查通信线路和设备状态后重试。",
                                      "dialog-warning-symbolic");
+                set_last_error(console, NULL);
+                show_connection_error(console, "设备读取失败", result->error->message);
             }
             return;
         }
         update_telemetry(console, &result->telemetry);
-        set_last_error(console, NULL);
+        if (!console->command_error_active) {
+            set_last_error(console, NULL);
+        }
         if (!console->initialized) {
             adw_spin_row_set_value(console->power_spin, result->telemetry.real_power_percent);
             adw_spin_row_set_value(console->default_simmer_spin, result->telemetry.default_simmer);
@@ -1141,7 +1239,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         }
         update_device_status(console);
         update_output_buttons(console);
-        if (console->poll_source == 0) {
+        if (console->poll_source == 0 && !console->shutdown_in_progress) {
             console->poll_source = g_timeout_add_seconds(1, poll_tick, console);
         }
         return;
@@ -1149,15 +1247,20 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
 
     if (result->type == JPT_CLIENT_EXCHANGE) {
         if (result->error != NULL) {
+            console->command_error_active = TRUE;
             set_last_error(console, result->error->message);
             append_log(console, "命令失败：%s", result->error->message);
             set_status_item(console->command_indicator, console->last_command_label,
                             "命令失败", "error");
+            gtk_widget_set_tooltip_text(GTK_WIDGET(console->last_command_label),
+                                        result->error->message);
         } else if (result->exchange != NULL) {
+            console->command_error_active = FALSE;
             set_last_error(console, NULL);
             gchar *message = g_strdup_printf("命令 0x%04X 已确认", result->exchange->frame->command);
             set_status_item(console->command_indicator, console->last_command_label,
                             message, "success");
+            gtk_widget_set_tooltip_text(GTK_WIDGET(console->last_command_label), NULL);
             g_free(message);
         }
     }
@@ -1182,18 +1285,11 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
     (void)button;
     LaserConsole *console = user_data;
     if (console->connected) {
-        console->connected = FALSE;
-        console->connection_pending = TRUE;
-        set_connection_state(console, "正在断开", FALSE, FALSE);
-        show_connection_page(console, "正在断开连接", "正在关闭设备连接。",
-                             "network-offline-symbolic");
-        update_device_status(console);
-        update_output_buttons(console);
-        jpt_client_disconnect_async(console->client, result_callback, console);
+        begin_safe_shutdown(console, FALSE);
         return;
     }
 
-    gboolean serial = gtk_drop_down_get_selected(console->transport_dropdown) == 0;
+    gboolean serial = gtk_toggle_button_get_active(console->serial_mode);
     const gchar *endpoint = gtk_editable_get_text(GTK_EDITABLE(console->endpoint_entry));
     if (serial) {
         guint selected = gtk_drop_down_get_selected(console->serial_port_dropdown);
@@ -2336,21 +2432,306 @@ static GtkWidget *build_extension_page(LaserConsole *console)
     return scroll;
 }
 
-static gboolean window_close_request(GtkWindow *window, gpointer user_data)
+static void shutdown_dialog_destroy(LaserConsole *console)
 {
-    (void)window;
+    if (console->shutdown_window != NULL) {
+        gtk_window_destroy(console->shutdown_window);
+        console->shutdown_window = NULL;
+        console->shutdown_label = NULL;
+    }
+}
+
+static void show_shutdown_error(LaserConsole *console)
+{
+    GString *body = g_string_new("未能确认以下操作：\n");
+    g_string_append(body, console->shutdown_errors->str);
+    g_string_append(body, "\n程序保持打开。请确认设备状态和通信后重试。");
+
+    AdwAlertDialog *dialog = ADW_ALERT_DIALOG(
+        adw_alert_dialog_new("安全关闭未完成", body->str));
+    adw_alert_dialog_add_response(dialog, "close", "确定");
+    adw_alert_dialog_set_default_response(dialog, "close");
+    adw_alert_dialog_set_close_response(dialog, "close");
+    adw_dialog_present(ADW_DIALOG(dialog), console->window);
+    g_string_free(body, TRUE);
+}
+
+static void finish_shutdown(LaserConsole *console)
+{
+    shutdown_dialog_destroy(console);
+    if (console->shutdown_errors->len != 0) {
+        console->shutdown_in_progress = FALSE;
+        console->shutdown_close_window = FALSE;
+        gtk_widget_set_sensitive(console->window, TRUE);
+        set_connection_state(console, "关闭未确认", FALSE, TRUE);
+        if (!console->connected) {
+            show_connection_page(console, "关闭未确认",
+                                 "设备输出状态无法确认，请检查设备状态后再退出。",
+                                 "dialog-warning-symbolic");
+        } else if (console->initialized && console->poll_source == 0) {
+            console->poll_source = g_timeout_add_seconds(1, poll_tick, console);
+        }
+        show_shutdown_error(console);
+        g_string_free(console->shutdown_errors, TRUE);
+        console->shutdown_errors = NULL;
+        return;
+    }
+
+    g_string_free(console->shutdown_errors, TRUE);
+    console->shutdown_errors = NULL;
+    console->shutdown_in_progress = FALSE;
+    if (console->shutdown_close_window) {
+        console->shutdown_complete = TRUE;
+        gtk_window_close(GTK_WINDOW(console->window));
+        return;
+    }
+
+    console->shutdown_close_window = FALSE;
+    console->connection_pending = FALSE;
+    console->poll_pending = FALSE;
+    console->initialized = FALSE;
+    gtk_check_button_set_active(console->safety_ack, FALSE);
+    if (console->protocol_ack != NULL) {
+        gtk_check_button_set_active(console->protocol_ack, FALSE);
+    }
+    gtk_widget_set_sensitive(console->window, TRUE);
+    set_connection_state(console, "未连接", FALSE, FALSE);
+    gtk_button_set_label(console->connect_button, "连接");
+    show_connection_page(console, "设备未连接", "选择串口或 TCP 地址并连接激光器。",
+                         "network-offline-symbolic");
+    update_device_status(console);
+    update_output_buttons(console);
+}
+
+static void shutdown_disconnect_callback(const JptClientResult *result, gpointer user_data)
+{
     LaserConsole *console = user_data;
+    if (result->error != NULL) {
+        g_string_append_printf(console->shutdown_errors, "断开设备连接：%s\n",
+                               result->error->message);
+    } else {
+        console->connected = FALSE;
+        console->initialized = FALSE;
+    }
+    finish_shutdown(console);
+}
+
+static void abort_shutdown(LaserConsole *console, const gchar *message)
+{
+    g_string_append_printf(console->shutdown_errors, "读取控制模式：%s\n", message);
+    finish_shutdown(console);
+}
+
+static void shutdown_control_mode_callback(const JptClientResult *result, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    if (result->error != NULL) {
+        abort_shutdown(console, result->error->message);
+        return;
+    }
+    if (result->exchange == NULL || result->exchange->frame == NULL) {
+        abort_shutdown(console, "设备没有返回控制模式，无法确认软件控制的输出。");
+        return;
+    }
+
+    guint16 control_mode = 0;
+    GError *error = NULL;
+    if (!jpt_frame_read_u16(result->exchange->frame, 0, &control_mode, &error)) {
+        abort_shutdown(console, error->message);
+        g_clear_error(&error);
+        return;
+    }
+
+    console->shutdown_command_index = 0;
+    console->shutdown_command_count = 0;
+    console->shutdown_verify_status_mask = 1u << 2;
+    console->shutdown_verify_power = (control_mode & (1u << 4)) != 0;
+    if (control_mode & (1u << 1)) {
+        guint index = console->shutdown_command_count++;
+        console->shutdown_commands[index] = JPT_CMD_GUI_PA;
+        console->shutdown_command_names[index] = "PA=0";
+        console->shutdown_verify_status_mask |= 1u << 0;
+    }
+    if (control_mode & (1u << 0)) {
+        guint index = console->shutdown_command_count++;
+        console->shutdown_commands[index] = JPT_CMD_GUI_MO;
+        console->shutdown_command_names[index] = "MO=0";
+        console->shutdown_verify_status_mask |= 1u << 1;
+    }
+    guint red_index = console->shutdown_command_count++;
+    console->shutdown_commands[red_index] = JPT_CMD_RED_LIGHT;
+    console->shutdown_command_names[red_index] = "红光关闭";
+    if (control_mode & (1u << 4)) {
+        guint index = console->shutdown_command_count++;
+        console->shutdown_commands[index] = JPT_CMD_POWER;
+        console->shutdown_command_names[index] = "功率设为 0%";
+    }
+    shutdown_next(console);
+}
+
+static void shutdown_write_callback(const JptClientResult *result, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    if (result->error != NULL) {
+        g_string_append_printf(console->shutdown_errors, "%s：%s\n",
+                               console->shutdown_command_names[console->shutdown_command_index],
+                               result->error->message);
+    }
+    console->shutdown_command_index++;
+    shutdown_next(console);
+}
+
+static void shutdown_verify_callback(const JptClientResult *result, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    if (result->error != NULL) {
+        g_string_append_printf(console->shutdown_errors, "读取设备关断状态：%s\n",
+                               result->error->message);
+        finish_shutdown(console);
+        return;
+    }
+
+    GString *write_errors = g_string_new(console->shutdown_errors->str);
+    g_string_set_size(console->shutdown_errors, 0);
+    if ((result->telemetry.status & console->shutdown_verify_status_mask) != 0) {
+        g_string_append(console->shutdown_errors, "PA、MO 或红光状态仍处于开启\n");
+    }
+    if (console->shutdown_verify_power && result->telemetry.real_power_percent != 0) {
+        g_string_append_printf(console->shutdown_errors, "软件控制功率仍为 %u%%\n",
+                               result->telemetry.real_power_percent);
+    }
+    if (console->shutdown_errors->len != 0) {
+        if (write_errors->len != 0) {
+            g_string_prepend(console->shutdown_errors, write_errors->str);
+        }
+        g_string_free(write_errors, TRUE);
+        finish_shutdown(console);
+        return;
+    }
+    g_string_free(write_errors, TRUE);
+
+    gtk_label_set_text(console->shutdown_label, "输出已确认关闭，正在断开设备连接…");
+    jpt_client_disconnect_async(console->client, shutdown_disconnect_callback, console);
+}
+
+static void shutdown_next(LaserConsole *console)
+{
+    if (console->shutdown_command_index < console->shutdown_command_count) {
+        guint index = console->shutdown_command_index;
+        gchar *text = g_strdup_printf("正在关闭%s…", console->shutdown_command_names[index]);
+        gtk_label_set_text(console->shutdown_label, text);
+        g_free(text);
+        jpt_client_write_u16_async(console->client, console->shutdown_commands[index], 0,
+                                   shutdown_write_callback, console);
+        return;
+    }
+
+    gtk_label_set_text(console->shutdown_label, "正在确认输出状态…");
+    jpt_client_poll_async(console->client, shutdown_verify_callback, console);
+}
+
+static void present_shutdown_dialog(LaserConsole *console)
+{
+    GtkWindow *dialog = GTK_WINDOW(gtk_window_new());
+    console->shutdown_window = dialog;
+    gtk_window_set_title(dialog, "正在安全关闭");
+    gtk_window_set_transient_for(dialog, GTK_WINDOW(console->window));
+    gtk_window_set_modal(dialog, TRUE);
+    gtk_window_set_deletable(dialog, FALSE);
+    gtk_window_set_resizable(dialog, FALSE);
+    gtk_window_set_default_size(dialog, 380, 120);
+
+    GtkWidget *content = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 16);
+    gtk_widget_set_margin_start(content, 24);
+    gtk_widget_set_margin_end(content, 24);
+    gtk_widget_set_margin_top(content, 24);
+    gtk_widget_set_margin_bottom(content, 24);
+    GtkWidget *spinner = gtk_spinner_new();
+    gtk_spinner_start(GTK_SPINNER(spinner));
+    gtk_widget_set_valign(spinner, GTK_ALIGN_CENTER);
+    console->shutdown_label = GTK_LABEL(gtk_label_new("正在关闭软件控制的输出…"));
+    gtk_label_set_wrap(console->shutdown_label, TRUE);
+    gtk_label_set_xalign(console->shutdown_label, 0.0f);
+    gtk_box_append(GTK_BOX(content), spinner);
+    gtk_box_append(GTK_BOX(content), GTK_WIDGET(console->shutdown_label));
+    gtk_window_set_child(dialog, content);
+    gtk_window_present(dialog);
+}
+
+static void read_shutdown_control_mode(LaserConsole *console)
+{
+    gtk_label_set_text(console->shutdown_label, "正在读取设备控制模式…");
+    GError *error = NULL;
+    GBytes *request = jpt_device_read_request(JPT_CMD_READ_CONTROL_MODE, &error);
+    if (request == NULL) {
+        abort_shutdown(console, error != NULL ? error->message : "无法构造控制模式读取请求。");
+        g_clear_error(&error);
+        return;
+    }
+    jpt_client_request_async(console->client, JPT_CMD_READ_CONTROL_MODE, request,
+                             shutdown_control_mode_callback, console);
+    g_bytes_unref(request);
+}
+
+static void begin_safe_shutdown(LaserConsole *console, gboolean close_window)
+{
+    if (console->shutdown_in_progress) {
+        return;
+    }
+
+    console->shutdown_in_progress = TRUE;
+    console->shutdown_close_window = close_window;
+    console->shutdown_errors = g_string_new(NULL);
+    if (console->poll_source != 0) {
+        g_source_remove(console->poll_source);
+        console->poll_source = 0;
+    }
+    present_shutdown_dialog(console);
+
+    if (console->connection_pending) {
+        gtk_label_set_text(console->shutdown_label, "正在等待设备连接结果…");
+        return;
+    }
+    if (!console->connected) {
+        abort_shutdown(console, "设备未连接，无法读取控制模式和输出状态。");
+        return;
+    }
+
+    read_shutdown_control_mode(console);
+}
+
+static void release_console(LaserConsole *console)
+{
     if (console->poll_source != 0) {
         g_source_remove(console->poll_source);
         console->poll_source = 0;
     }
     console->closing = TRUE;
+    shutdown_dialog_destroy(console);
     jpt_client_free(console->client);
     g_ptr_array_unref(console->write_buttons);
     g_ptr_array_unref(console->serial_ports);
     g_object_unref(console->serial_port_model);
     g_free(console);
-    return FALSE;
+}
+
+static gboolean window_close_request(GtkWindow *window, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    if (console->shutdown_complete) {
+        release_console(console);
+        return FALSE;
+    }
+    if (console->shutdown_in_progress) {
+        return TRUE;
+    }
+    if (!console->connected && !console->connection_pending) {
+        release_console(console);
+        return FALSE;
+    }
+    begin_safe_shutdown(console, TRUE);
+    (void)window;
+    return TRUE;
 }
 
 GtkWidget *laser_console_create(AdwApplication *application)
@@ -2372,24 +2753,21 @@ GtkWidget *laser_console_create(AdwApplication *application)
     console->window_title = ADW_WINDOW_TITLE(
         adw_window_title_new("MS LEP", "JPT YDFLP-E3-100-M7 调试控制台"));
     adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(console->window_title));
-    console->emergency_button = GTK_BUTTON(gtk_button_new_with_label("紧急关闭"));
+    console->emergency_button = GTK_BUTTON(gtk_button_new_with_label("紧急停光"));
     gtk_widget_add_css_class(GTK_WIDGET(console->emergency_button), "destructive-action");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(console->emergency_button),
+                                "发送 PA=0、MO=0 和红光关闭命令；设备保持连接。");
     g_signal_connect(console->emergency_button, "clicked", G_CALLBACK(emergency_clicked), console);
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), GTK_WIDGET(console->emergency_button));
     console->show_sidebar_button = GTK_TOGGLE_BUTTON(gtk_toggle_button_new());
     gtk_button_set_icon_name(GTK_BUTTON(console->show_sidebar_button), "sidebar-show-symbolic");
     gtk_widget_set_visible(GTK_WIDGET(console->show_sidebar_button), FALSE);
     gtk_widget_set_tooltip_text(GTK_WIDGET(console->show_sidebar_button), "显示导航");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(console->show_sidebar_button),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL, "显示导航", -1);
     g_signal_connect(console->show_sidebar_button, "toggled",
                      G_CALLBACK(show_sidebar_toggled), console);
     adw_header_bar_pack_start(ADW_HEADER_BAR(header), GTK_WIDGET(console->show_sidebar_button));
-
-    const gchar *transport_options[] = {"串口", "TCP", NULL};
-    console->transport_dropdown = GTK_DROP_DOWN(gtk_drop_down_new_from_strings(transport_options));
-    gtk_drop_down_set_selected(console->transport_dropdown, 0);
-    gtk_widget_set_size_request(GTK_WIDGET(console->transport_dropdown), 160, 44);
-    g_signal_connect(console->transport_dropdown, "notify::selected",
-                     G_CALLBACK(transport_mode_changed), console);
 
     console->serial_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_hexpand(console->serial_controls, TRUE);
@@ -2404,6 +2782,8 @@ GtkWidget *laser_console_create(AdwApplication *application)
     console->refresh_serial_button = GTK_BUTTON(gtk_button_new_from_icon_name("view-refresh-symbolic"));
     gtk_widget_set_size_request(GTK_WIDGET(console->refresh_serial_button), 44, 44);
     gtk_widget_set_tooltip_text(GTK_WIDGET(console->refresh_serial_button), "刷新串口设备");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(console->refresh_serial_button),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL, "刷新串口设备", -1);
     g_signal_connect(console->refresh_serial_button, "clicked",
                      G_CALLBACK(refresh_serial_clicked), console);
     console->manual_serial_entry = GTK_ENTRY(gtk_entry_new());
@@ -2411,9 +2791,12 @@ GtkWidget *laser_console_create(AdwApplication *application)
     gtk_editable_set_text(GTK_EDITABLE(console->manual_serial_entry), "/dev/ttyUSB0");
     gtk_entry_set_placeholder_text(console->manual_serial_entry, "/dev/ttyUSB0");
     gtk_widget_set_size_request(GTK_WIDGET(console->manual_serial_entry), 240, -1);
+    gtk_widget_set_hexpand(GTK_WIDGET(console->manual_serial_entry), TRUE);
     console->select_serial_button = GTK_BUTTON(gtk_button_new_from_icon_name("view-list-symbolic"));
     gtk_widget_set_size_request(GTK_WIDGET(console->select_serial_button), 44, 44);
     gtk_widget_set_tooltip_text(GTK_WIDGET(console->select_serial_button), "选择检测到的串口");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(console->select_serial_button),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL, "选择检测到的串口", -1);
     g_signal_connect(console->select_serial_button, "clicked",
                      G_CALLBACK(select_serial_list_clicked), console);
     gtk_box_append(GTK_BOX(console->serial_controls), GTK_WIDGET(console->serial_port_dropdown));
@@ -2431,8 +2814,10 @@ GtkWidget *laser_console_create(AdwApplication *application)
     gtk_widget_add_css_class(GTK_WIDGET(console->connect_button), "connection-primary");
     g_signal_connect(console->connect_button, "clicked", G_CALLBACK(connect_clicked), console);
 
-    console->disconnect_button = GTK_BUTTON(gtk_button_new_with_label("断开连接"));
+    console->disconnect_button = GTK_BUTTON(gtk_button_new_with_label("安全断开"));
     gtk_widget_add_css_class(GTK_WIDGET(console->disconnect_button), "flat");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(console->disconnect_button),
+                                "先关闭由软件控制的输出，确认后再断开设备。");
     g_signal_connect(console->disconnect_button, "clicked", G_CALLBACK(connect_clicked), console);
 
     console->main_stack = GTK_STACK(gtk_stack_new());
