@@ -31,9 +31,13 @@ static void send_u16(LaserConsole *console, guint16 command, guint16 value);
 static void navigation_row_activated(GtkListBox *list, GtkListBoxRow *row, gpointer user_data);
 static void sidebar_visibility_changed(GObject *object, GParamSpec *pspec, gpointer user_data);
 static void show_sidebar_toggled(GtkToggleButton *button, gpointer user_data);
+static void navigation_page_changed(GObject *object, GParamSpec *pspec, gpointer user_data);
+static void alarm_history_buffer_changed(GtkTextBuffer *buffer, gpointer user_data);
+static void set_last_error(LaserConsole *console, const gchar *text);
 
 struct _LaserConsole {
     GtkWidget *window;
+    AdwWindowTitle *window_title;
     GtkStack *main_stack;
     AdwViewStack *view_stack;
     AdwOverlaySplitView *workbench_split_view;
@@ -41,6 +45,8 @@ struct _LaserConsole {
     GtkToggleButton *show_sidebar_button;
     GtkWidget *connection_page;
     GtkBox *connection_split_box;
+    GtkBox *control_columns;
+    GtkBox *monitor_columns;
     GtkPicture *device_picture;
     GtkImage *connection_icon;
     GtkLabel *connection_title;
@@ -107,6 +113,7 @@ struct _LaserConsole {
     GtkLabel *alarm_counts[8];
     GtkTextBuffer *log_buffer;
     GtkTextBuffer *alarm_history_buffer;
+    GtkStack *alarm_history_stack;
     GtkTextBuffer *alarm_cache_buffer;
     GtkLabel *extension_status_label;
     GtkButton *m7_cutoff_read_button;
@@ -251,6 +258,13 @@ static void append_alarm_history(LaserConsole *console, guint16 alarm_state)
     g_free(message);
     g_free(timestamp);
     g_date_time_unref(now);
+}
+
+static void alarm_history_buffer_changed(GtkTextBuffer *buffer, gpointer user_data)
+{
+    GtkStack *stack = GTK_STACK(user_data);
+    gtk_stack_set_visible_child_name(stack,
+                                     gtk_text_buffer_get_char_count(buffer) > 0 ? "history" : "empty");
 }
 
 static gchar *format_bytes(GBytes *bytes)
@@ -539,6 +553,15 @@ static void set_status_item(GtkWidget *indicator, GtkLabel *label, const gchar *
     gtk_label_set_text(label, text);
 }
 
+static void set_last_error(LaserConsole *console, const gchar *text)
+{
+    gtk_label_set_text(console->last_error_label, text != NULL ? text : "");
+    gtk_widget_set_tooltip_text(GTK_WIDGET(console->last_error_label), text);
+    gtk_widget_remove_css_class(GTK_WIDGET(console->last_error_label), "error");
+    gtk_widget_add_css_class(GTK_WIDGET(console->last_error_label),
+                             text != NULL && text[0] != '\0' ? "error" : "dim-label");
+}
+
 static GtkWidget *make_status_item(const gchar *title, const gchar *text,
                                        GtkWidget **indicator, GtkLabel **label)
 {
@@ -705,7 +728,6 @@ static void build_connection_page(LaserConsole *console)
 
     gtk_widget_add_css_class(visual_panel, "card");
     gtk_widget_set_size_request(visual_panel, 300, -1);
-    gtk_widget_set_size_request(form_panel, 560, -1);
     console->connection_split_box = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 32));
     gtk_widget_set_hexpand(GTK_WIDGET(console->connection_split_box), TRUE);
     gtk_box_append(console->connection_split_box, visual_panel);
@@ -757,11 +779,24 @@ static void navigation_row_activated(GtkListBox *list, GtkListBoxRow *row, gpoin
 {
     (void)list;
     LaserConsole *console = user_data;
-    const gchar *page_name = g_object_get_data(G_OBJECT(row), "page-name");
+    GtkWidget *item = gtk_list_box_row_get_child(row);
+    const gchar *page_name = g_object_get_data(G_OBJECT(item), "page-name");
     adw_view_stack_set_visible_child_name(console->view_stack, page_name);
     if (adw_overlay_split_view_get_collapsed(console->workbench_split_view)) {
         adw_overlay_split_view_set_show_sidebar(console->workbench_split_view, FALSE);
     }
+}
+
+static void navigation_page_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+{
+    (void)pspec;
+    LaserConsole *console = user_data;
+    GtkWidget *child = adw_view_stack_get_visible_child(ADW_VIEW_STACK(object));
+    if (child == NULL) {
+        return;
+    }
+    AdwViewStackPage *page = adw_view_stack_get_page(ADW_VIEW_STACK(object), child);
+    adw_window_title_set_subtitle(console->window_title, adw_view_stack_page_get_title(page));
 }
 
 static void sidebar_visibility_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
@@ -931,7 +966,6 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     gtk_label_set_text(console->serial_label, current->serial_number[0] ? current->serial_number : "未读取");
     gchar *text = g_strdup_printf("%u %%", current->real_power_percent);
     gtk_label_set_text(console->real_power_label, text);
-    gtk_progress_bar_set_text(console->power_bar, text);
     gtk_progress_bar_set_fraction(console->power_bar,
                                   CLAMP((gdouble)current->real_power_percent / 100.0, 0.0, 1.0));
     g_free(text);
@@ -1007,6 +1041,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         console->connection_pending = FALSE;
         if (result->connected) {
             console->connected = TRUE;
+            set_last_error(console, NULL);
             gtk_button_set_label(console->connect_button, "断开");
             set_connection_state(console, "正在读取设备", FALSE, FALSE);
             show_connection_page(console, "正在读取设备", "连接已建立，正在读取激光器信息。",
@@ -1026,7 +1061,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
                                  result->error ? result->error->message : "无法建立设备连接。",
                                  "dialog-warning-symbolic");
             if (result->error != NULL) {
-                gtk_label_set_text(console->last_error_label, result->error->message);
+                set_last_error(console, result->error->message);
             }
         }
         update_device_status(console);
@@ -1059,7 +1094,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             return;
         }
         if (result->error != NULL) {
-            gtk_label_set_text(console->last_error_label, result->error->message);
+            set_last_error(console, result->error->message);
             append_log(console, "轮询失败：%s", result->error->message);
             if (!console->initialized) {
                 set_connection_state(console, "设备读取失败", FALSE, TRUE);
@@ -1071,6 +1106,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             return;
         }
         update_telemetry(console, &result->telemetry);
+        set_last_error(console, NULL);
         if (!console->initialized) {
             adw_spin_row_set_value(console->power_spin, result->telemetry.real_power_percent);
             adw_spin_row_set_value(console->default_simmer_spin, result->telemetry.default_simmer);
@@ -1113,11 +1149,12 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
 
     if (result->type == JPT_CLIENT_EXCHANGE) {
         if (result->error != NULL) {
-            gtk_label_set_text(console->last_error_label, result->error->message);
+            set_last_error(console, result->error->message);
             append_log(console, "命令失败：%s", result->error->message);
             set_status_item(console->command_indicator, console->last_command_label,
                             "命令失败", "error");
         } else if (result->exchange != NULL) {
+            set_last_error(console, NULL);
             gchar *message = g_strdup_printf("命令 0x%04X 已确认", result->exchange->frame->command);
             set_status_item(console->command_indicator, console->last_command_label,
                             message, "success");
@@ -1510,7 +1547,7 @@ static void alarm_action_clicked(GtkButton *button, gpointer user_data)
 static void send_u16(LaserConsole *console, guint16 command, guint16 value)
 {
     if (!console->connected || !console->initialized) {
-        gtk_label_set_text(console->last_error_label, "设备尚未就绪");
+        set_last_error(console, "设备尚未就绪");
         return;
     }
     set_status_item(console->command_indicator, console->last_command_label,
@@ -1769,11 +1806,15 @@ static GtkCheckButton *add_mask_option(GtkWidget *container, const gchar *title,
 static GtkWidget *build_control_page(LaserConsole *console)
 {
     GtkWidget *scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
-    adw_preferences_page_set_title(page, "控制台");
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(page));
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
     console->control_page = scroll;
+
+    GtkWidget *content = gtk_box_new(GTK_ORIENTATION_VERTICAL, 20);
+    gtk_widget_set_margin_start(content, 20);
+    gtk_widget_set_margin_end(content, 20);
+    gtk_widget_set_margin_top(content, 16);
+    gtk_widget_set_margin_bottom(content, 20);
 
     AdwPreferencesGroup *safety_group = make_group("输出许可");
     adw_preferences_group_set_description(
@@ -1786,17 +1827,31 @@ static GtkWidget *build_control_page(LaserConsole *console)
     adw_action_row_set_activatable_widget(safety_row, GTK_WIDGET(console->safety_ack));
     g_signal_connect(console->safety_ack, "toggled", G_CALLBACK(safety_changed), console);
     adw_preferences_group_add(safety_group, GTK_WIDGET(safety_row));
-    adw_preferences_page_add(page, safety_group);
+    gtk_box_append(GTK_BOX(content), GTK_WIDGET(safety_group));
+
+    console->control_columns = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 24));
+    gtk_widget_set_hexpand(GTK_WIDGET(console->control_columns), TRUE);
+    GtkWidget *parameter_column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 20);
+    GtkWidget *output_column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 20);
+    gtk_widget_set_hexpand(parameter_column, TRUE);
+    gtk_widget_set_hexpand(output_column, TRUE);
+    gtk_box_append(console->control_columns, parameter_column);
+    gtk_box_append(console->control_columns, output_column);
+    gtk_box_append(GTK_BOX(content), GTK_WIDGET(console->control_columns));
 
     AdwPreferencesGroup *parameter_group = make_group("实时参数写入");
     console->power_spin = make_spin(0, 100, 1, 0);
     console->frequency_spin = make_spin(1, 4000, 1, 100);
-    console->pulse_spin = make_spin(1, 500, 1, 20);
+    console->pulse_spin = make_spin(2, 500, 1, 20);
     console->simmer_spin = make_spin(0, 1000, 1, 0);
-    add_spin_setting(GTK_WIDGET(parameter_group), "功率 (%)", console->power_spin, JPT_CMD_POWER, 4, console);
-    add_spin_setting(GTK_WIDGET(parameter_group), "频率 (kHz)", console->frequency_spin, JPT_CMD_FREQUENCY, 3, console);
-    add_spin_setting(GTK_WIDGET(parameter_group), "脉宽 (ns)", console->pulse_spin, JPT_CMD_PULSE_WIDTH, 2, console);
-    add_spin_setting(GTK_WIDGET(parameter_group), "Simmer", console->simmer_spin, JPT_CMD_SIMMER, G_MAXUINT, console);
+    add_spin_setting(GTK_WIDGET(parameter_group), "功率 (%)", console->power_spin,
+                     JPT_CMD_POWER, 4, console);
+    add_spin_setting(GTK_WIDGET(parameter_group), "频率 (kHz)", console->frequency_spin,
+                     JPT_CMD_FREQUENCY, 3, console);
+    add_spin_setting(GTK_WIDGET(parameter_group), "脉宽 (ns)", console->pulse_spin,
+                     JPT_CMD_PULSE_WIDTH, 2, console);
+    add_spin_setting(GTK_WIDGET(parameter_group), "Simmer", console->simmer_spin,
+                     JPT_CMD_SIMMER, G_MAXUINT, console);
     console->apply_parameters_button = GTK_BUTTON(gtk_button_new());
     AdwButtonContent *apply_content = ADW_BUTTON_CONTENT(adw_button_content_new());
     adw_button_content_set_icon_name(apply_content, "emblem-ok-symbolic");
@@ -1807,14 +1862,15 @@ static GtkWidget *build_control_page(LaserConsole *console)
                      G_CALLBACK(apply_parameters_clicked), console);
     adw_preferences_group_set_header_suffix(parameter_group,
                                              GTK_WIDGET(console->apply_parameters_button));
-    adw_preferences_page_add(page, parameter_group);
+    gtk_box_append(GTK_BOX(parameter_column), GTK_WIDGET(parameter_group));
 
     AdwPreferencesGroup *output_group = make_group("控制来源与输出");
     adw_preferences_group_set_description(
         output_group,
         "连接后沿用设备当前模式；只有明确切换时才会写入控制模式。外控模式下由 JCZ/DB25 提供出光信号。");
     adw_preferences_group_add(output_group,
-                               GTK_WIDGET(make_property_row("设备当前模式", &console->control_source_label)));
+                               GTK_WIDGET(make_property_row("设备当前模式",
+                                                            &console->control_source_label)));
     AdwActionRow *mode_row = ADW_ACTION_ROW(adw_action_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(mode_row), "切换控制来源");
     adw_action_row_set_subtitle(mode_row, "切换会立即写入设备控制模式");
@@ -1848,8 +1904,14 @@ static GtkWidget *build_control_page(LaserConsole *console)
     gtk_box_append(GTK_BOX(output_box), GTK_WIDGET(console->mo_button));
     adw_action_row_add_suffix(output_row, output_box);
     adw_preferences_group_add(output_group, GTK_WIDGET(output_row));
-    adw_preferences_page_add(page, output_group);
+    gtk_box_append(GTK_BOX(output_column), GTK_WIDGET(output_group));
 
+    AdwClamp *clamp = ADW_CLAMP(adw_clamp_new());
+    adw_clamp_set_maximum_size(clamp, 1120);
+    adw_clamp_set_child(clamp, content);
+    gtk_widget_set_hexpand(GTK_WIDGET(clamp), TRUE);
+    gtk_widget_set_halign(GTK_WIDGET(clamp), GTK_ALIGN_FILL);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(clamp));
     return scroll;
 }
 
@@ -1910,40 +1972,58 @@ static GtkWidget *build_settings_page(LaserConsole *console)
 static GtkWidget *build_monitor_page(LaserConsole *console)
 {
     GtkWidget *scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll), GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
-    AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
-    adw_preferences_page_set_title(page, "监控");
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(page));
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
 
-    AdwPreferencesGroup *metrics_group = make_group("实时监控");
+    console->monitor_columns = GTK_BOX(gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 24));
+    gtk_widget_set_hexpand(GTK_WIDGET(console->monitor_columns), TRUE);
+    gtk_widget_set_margin_start(GTK_WIDGET(console->monitor_columns), 20);
+    gtk_widget_set_margin_end(GTK_WIDGET(console->monitor_columns), 20);
+    gtk_widget_set_margin_top(GTK_WIDGET(console->monitor_columns), 16);
+    gtk_widget_set_margin_bottom(GTK_WIDGET(console->monitor_columns), 16);
+
+    GtkWidget *device_column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 20);
+    GtkWidget *interface_column = gtk_box_new(GTK_ORIENTATION_VERTICAL, 20);
+    gtk_widget_set_hexpand(device_column, TRUE);
+    gtk_widget_set_hexpand(interface_column, TRUE);
+    gtk_box_append(console->monitor_columns, device_column);
+    gtk_box_append(console->monitor_columns, interface_column);
+
+    AdwPreferencesGroup *metrics_group = make_group("实时参数");
     const struct {
         const gchar *title;
         GtkLabel **value;
     } metrics[] = {
-        {"实时功率", &console->real_power_label},
         {"实时频率", &console->real_frequency_label},
         {"实时脉宽", &console->real_pulse_label},
         {"传感器 1", &console->sensor_1_label},
         {"传感器 2", &console->sensor_2_label},
         {"种子源 TEC", &console->tec_label},
         {"输出电流", &console->current_label},
-        {"SN", &console->serial_label},
+        {"设备序列号", &console->serial_label},
     };
     for (guint i = 0; i < G_N_ELEMENTS(metrics); i++) {
         adw_preferences_group_add(metrics_group,
-                                   GTK_WIDGET(make_property_row(metrics[i].title, metrics[i].value)));
+                                  GTK_WIDGET(make_property_row(metrics[i].title, metrics[i].value)));
     }
+
     AdwActionRow *power_row = ADW_ACTION_ROW(adw_action_row_new());
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(power_row), "实时功率");
+    GtkWidget *power_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 4);
+    console->real_power_label = GTK_LABEL(gtk_label_new("0%"));
+    gtk_widget_add_css_class(GTK_WIDGET(console->real_power_label), "title-4");
+    gtk_label_set_xalign(console->real_power_label, 1.0f);
+    gtk_box_append(GTK_BOX(power_box), GTK_WIDGET(console->real_power_label));
     console->power_bar = GTK_PROGRESS_BAR(gtk_progress_bar_new());
-    gtk_progress_bar_set_show_text(console->power_bar, TRUE);
-    gtk_progress_bar_set_text(console->power_bar, "0%");
+    gtk_progress_bar_set_show_text(console->power_bar, FALSE);
+    gtk_widget_set_size_request(GTK_WIDGET(console->power_bar), 150, -1);
     gtk_widget_set_hexpand(GTK_WIDGET(console->power_bar), TRUE);
-    adw_action_row_add_suffix(power_row, GTK_WIDGET(console->power_bar));
+    gtk_box_append(GTK_BOX(power_box), GTK_WIDGET(console->power_bar));
+    adw_action_row_add_suffix(power_row, power_box);
     adw_preferences_group_add(metrics_group, GTK_WIDGET(power_row));
-    adw_preferences_page_add(page, metrics_group);
+    gtk_box_append(GTK_BOX(device_column), GTK_WIDGET(metrics_group));
 
-    AdwPreferencesGroup *signal_group = make_group("信号状态");
+    AdwPreferencesGroup *signal_group = make_group("设备信号");
     const gchar *signal_names[] = {"PA", "MO", "红光", "泵浦"};
     for (guint i = 0; i < G_N_ELEMENTS(signal_names); i++) {
         AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
@@ -1953,68 +2033,54 @@ static GtkWidget *build_monitor_page(LaserConsole *console)
         adw_action_row_add_suffix(row, GTK_WIDGET(console->status_indicators[i]));
         adw_preferences_group_add(signal_group, GTK_WIDGET(row));
     }
+    gtk_box_append(GTK_BOX(device_column), GTK_WIDGET(signal_group));
 
+    AdwPreferencesGroup *input_group = make_group("DB25 输入");
+    GtkWidget *input_grid = gtk_grid_new();
+    gtk_grid_set_column_spacing(GTK_GRID(input_grid), 24);
+    gtk_grid_set_row_spacing(GTK_GRID(input_grid), 8);
+    for (guint i = 0; i < G_N_ELEMENTS(console->power_indicators); i++) {
+        GtkWidget *cell = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+        gchar *name_text = g_strdup_printf("D%u", 7 - i);
+        GtkWidget *name = gtk_label_new(name_text);
+        g_free(name_text);
+        gtk_widget_add_css_class(name, "dim-label");
+        gtk_widget_set_hexpand(name, TRUE);
+        gtk_label_set_xalign(GTK_LABEL(name), 0.0f);
+        console->power_indicators[i] = GTK_LABEL(gtk_label_new("0"));
+        gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), "dim-label");
+        gtk_box_append(GTK_BOX(cell), name);
+        gtk_box_append(GTK_BOX(cell), GTK_WIDGET(console->power_indicators[i]));
+        gtk_grid_attach(GTK_GRID(input_grid), cell, i % 2, i / 2, 1, 1);
+    }
+    AdwActionRow *inputs_row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(inputs_row), "输入位");
+    adw_action_row_add_suffix(inputs_row, input_grid);
+    adw_preferences_group_add(input_group, GTK_WIDGET(inputs_row));
+
+    AdwActionRow *external_power_row = ADW_ACTION_ROW(adw_action_row_new());
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(external_power_row), "合成输入功率");
+    console->external_power_label = GTK_LABEL(gtk_label_new("0 / 255  (0%)"));
+    adw_action_row_add_suffix(external_power_row, GTK_WIDGET(console->external_power_label));
+    adw_preferences_group_add(input_group, GTK_WIDGET(external_power_row));
+    gtk_box_append(GTK_BOX(interface_column), GTK_WIDGET(input_group));
+
+    AdwPreferencesGroup *protocol_group = make_group("设备状态字");
     const gchar *protocol_names[] = {"控制模式", "状态字", "报警字"};
     GtkLabel **protocol_values[] = {
         &console->control_mode_label, &console->status_label, &console->alarm_state_label
     };
     for (guint i = 0; i < G_N_ELEMENTS(protocol_names); i++) {
-        adw_preferences_group_add(signal_group,
-                                   GTK_WIDGET(make_property_row(protocol_names[i], protocol_values[i])));
+        adw_preferences_group_add(protocol_group,
+                                  GTK_WIDGET(make_property_row(protocol_names[i], protocol_values[i])));
     }
+    gtk_box_append(GTK_BOX(interface_column), GTK_WIDGET(protocol_group));
 
-    AdwActionRow *external_power_row = ADW_ACTION_ROW(adw_action_row_new());
-    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(external_power_row), "DB25 功率输入");
-    console->external_power_label = GTK_LABEL(gtk_label_new("0 / 255  (0%)"));
-    adw_action_row_add_suffix(external_power_row, GTK_WIDGET(console->external_power_label));
-    adw_preferences_group_add(signal_group, GTK_WIDGET(external_power_row));
-    adw_preferences_page_add(page, signal_group);
-
-    AdwPreferencesGroup *input_group = make_group("DB25 输入");
-    for (guint i = 0; i < G_N_ELEMENTS(console->power_indicators); i++) {
-        AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
-        gchar *title = g_strdup_printf("D%u", 7 - i);
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), title);
-        g_free(title);
-        console->power_indicators[i] = GTK_LABEL(gtk_label_new("0"));
-        gtk_widget_add_css_class(GTK_WIDGET(console->power_indicators[i]), "dim-label");
-        adw_action_row_add_suffix(row, GTK_WIDGET(console->power_indicators[i]));
-        adw_preferences_group_add(input_group, GTK_WIDGET(row));
-    }
-    adw_preferences_page_add(page, input_group);
-
-    AdwPreferencesGroup *alarm_group = make_group("报警状态与计数");
-    for (guint i = 0; i < G_N_ELEMENTS(alarm_names); i++) {
-        AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), alarm_names[i]);
-        console->alarm_indicators[i] = GTK_LABEL(gtk_label_new("关闭"));
-        console->alarm_counts[i] = GTK_LABEL(gtk_label_new("0"));
-        gtk_widget_add_css_class(GTK_WIDGET(console->alarm_indicators[i]), "dim-label");
-        adw_action_row_add_suffix(row, GTK_WIDGET(console->alarm_indicators[i]));
-        adw_action_row_add_suffix(row, GTK_WIDGET(console->alarm_counts[i]));
-        adw_preferences_group_add(alarm_group, GTK_WIDGET(row));
-    }
-    adw_preferences_page_add(page, alarm_group);
-
-    console->alarm_actions_group = make_group("报警与累计值维护");
-    const struct {
-        const gchar *title;
-        guint command;
-    } alarm_actions[] = {
-        {"复位当前报警", JPT_CMD_ALARM_RESET},
-        {"清除报警次数", JPT_CMD_ALARM_CLEAR_COUNT},
-        {"清除累计出光时间", JPT_CMD_LASER_TIME_CLEAR},
-    };
-    for (guint i = 0; i < G_N_ELEMENTS(alarm_actions); i++) {
-        AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), alarm_actions[i].title);
-        GtkButton *action = GTK_BUTTON(gtk_button_new_with_label("执行"));
-        g_object_set_data(G_OBJECT(action), "command", GUINT_TO_POINTER(alarm_actions[i].command));
-        g_signal_connect(action, "clicked", G_CALLBACK(alarm_action_clicked), console);
-        adw_action_row_add_suffix(row, GTK_WIDGET(action));
-        adw_preferences_group_add(console->alarm_actions_group, GTK_WIDGET(row));
-    }
-    adw_preferences_page_add(page, console->alarm_actions_group);
+    AdwClamp *clamp = ADW_CLAMP(adw_clamp_new());
+    adw_clamp_set_maximum_size(clamp, 1120);
+    adw_clamp_set_child(clamp, GTK_WIDGET(console->monitor_columns));
+    gtk_widget_set_hexpand(GTK_WIDGET(clamp), TRUE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(clamp));
     return scroll;
 }
 
@@ -2134,26 +2200,83 @@ static GtkWidget *build_log_page(LaserConsole *console)
 
 static GtkWidget *build_alarm_history_page(LaserConsole *console)
 {
-    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 10);
-    gtk_widget_set_margin_start(box, 20);
-    gtk_widget_set_margin_end(box, 20);
-    gtk_widget_set_margin_top(box, 20);
-    gtk_widget_set_margin_bottom(box, 20);
-    GtkWidget *toolbar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 10);
-    GtkWidget *clear = gtk_button_new_with_label("清空记录");
-    g_signal_connect(clear, "clicked", G_CALLBACK(clear_log_clicked), console->alarm_history_buffer);
-    gtk_box_append(GTK_BOX(toolbar), clear);
-    gtk_box_append(GTK_BOX(box), toolbar);
-    GtkWidget *view = gtk_text_view_new_with_buffer(console->alarm_history_buffer);
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(view), FALSE);
-    gtk_text_view_set_monospace(GTK_TEXT_VIEW(view), TRUE);
-    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(view), GTK_WRAP_WORD_CHAR);
     GtkWidget *scroll = gtk_scrolled_window_new();
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), view);
-    gtk_widget_set_vexpand(scroll, TRUE);
-    gtk_box_append(GTK_BOX(box), scroll);
-    console->alarm_history_page = box;
-    return box;
+    gtk_scrolled_window_set_policy(GTK_SCROLLED_WINDOW(scroll),
+                                   GTK_POLICY_NEVER, GTK_POLICY_AUTOMATIC);
+    AdwPreferencesPage *page = ADW_PREFERENCES_PAGE(adw_preferences_page_new());
+    adw_preferences_page_set_title(page, "报警记录");
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), GTK_WIDGET(page));
+    console->alarm_history_page = scroll;
+
+    AdwPreferencesGroup *alarm_group = make_group("当前报警");
+    for (guint i = 0; i < G_N_ELEMENTS(alarm_names); i++) {
+        AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), alarm_names[i]);
+        console->alarm_indicators[i] = GTK_LABEL(gtk_label_new("关闭"));
+        console->alarm_counts[i] = GTK_LABEL(gtk_label_new("0 次"));
+        gtk_widget_add_css_class(GTK_WIDGET(console->alarm_indicators[i]), "dim-label");
+        adw_action_row_add_suffix(row, GTK_WIDGET(console->alarm_indicators[i]));
+        adw_action_row_add_suffix(row, GTK_WIDGET(console->alarm_counts[i]));
+        adw_preferences_group_add(alarm_group, GTK_WIDGET(row));
+    }
+    adw_preferences_page_add(page, alarm_group);
+
+    console->alarm_actions_group = make_group("报警与累计值维护");
+    const struct {
+        const gchar *title;
+        const gchar *action;
+        guint command;
+    } alarm_actions[] = {
+        {"复位当前报警", "复位", JPT_CMD_ALARM_RESET},
+        {"清除报警次数", "清除计数", JPT_CMD_ALARM_CLEAR_COUNT},
+        {"清除累计出光时间", "清除累计值", JPT_CMD_LASER_TIME_CLEAR},
+    };
+    for (guint i = 0; i < G_N_ELEMENTS(alarm_actions); i++) {
+        AdwActionRow *row = ADW_ACTION_ROW(adw_action_row_new());
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), alarm_actions[i].title);
+        GtkButton *action = GTK_BUTTON(gtk_button_new_with_label(alarm_actions[i].action));
+        g_object_set_data(G_OBJECT(action), "command", GUINT_TO_POINTER(alarm_actions[i].command));
+        g_signal_connect(action, "clicked", G_CALLBACK(alarm_action_clicked), console);
+        adw_action_row_add_suffix(row, GTK_WIDGET(action));
+        adw_preferences_group_add(console->alarm_actions_group, GTK_WIDGET(row));
+    }
+    adw_preferences_page_add(page, console->alarm_actions_group);
+
+    AdwPreferencesGroup *history_group = make_group("报警状态变化");
+    GtkButton *clear = GTK_BUTTON(gtk_button_new_with_label("清空记录"));
+    gtk_widget_add_css_class(GTK_WIDGET(clear), "flat");
+    g_signal_connect(clear, "clicked", G_CALLBACK(clear_log_clicked), console->alarm_history_buffer);
+    adw_preferences_group_set_header_suffix(history_group, GTK_WIDGET(clear));
+
+    GtkWidget *history_box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
+    console->alarm_history_stack = GTK_STACK(gtk_stack_new());
+    GtkWidget *empty_page = adw_status_page_new();
+    adw_status_page_set_icon_name(ADW_STATUS_PAGE(empty_page), "dialog-information-symbolic");
+    adw_status_page_set_title(ADW_STATUS_PAGE(empty_page), "暂无报警记录");
+    adw_status_page_set_description(ADW_STATUS_PAGE(empty_page),
+                                    "设备报警状态发生变化后会显示在这里。");
+    gtk_stack_add_named(console->alarm_history_stack, empty_page, "empty");
+
+    GtkWidget *history_view = gtk_text_view_new_with_buffer(console->alarm_history_buffer);
+    gtk_text_view_set_editable(GTK_TEXT_VIEW(history_view), FALSE);
+    gtk_text_view_set_monospace(GTK_TEXT_VIEW(history_view), TRUE);
+    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(history_view), GTK_WRAP_WORD_CHAR);
+    gtk_text_view_set_left_margin(GTK_TEXT_VIEW(history_view), 12);
+    gtk_text_view_set_right_margin(GTK_TEXT_VIEW(history_view), 12);
+    gtk_text_view_set_top_margin(GTK_TEXT_VIEW(history_view), 12);
+    gtk_text_view_set_bottom_margin(GTK_TEXT_VIEW(history_view), 12);
+    GtkWidget *history_scroll = gtk_scrolled_window_new();
+    gtk_widget_set_size_request(history_scroll, -1, 180);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(history_scroll), history_view);
+    gtk_stack_add_named(console->alarm_history_stack, history_scroll, "history");
+    gtk_stack_set_visible_child_name(console->alarm_history_stack, "empty");
+    g_signal_connect(console->alarm_history_buffer, "changed",
+                     G_CALLBACK(alarm_history_buffer_changed), console->alarm_history_stack);
+    gtk_box_append(GTK_BOX(history_box), GTK_WIDGET(console->alarm_history_stack));
+    adw_preferences_group_add(history_group, history_box);
+    adw_preferences_page_add(page, history_group);
+
+    return scroll;
 }
 
 static GtkWidget *build_extension_page(LaserConsole *console)
@@ -2242,12 +2365,13 @@ GtkWidget *laser_console_create(AdwApplication *application)
     console->window = window;
     gtk_window_set_title(GTK_WINDOW(window), "MS LEP | JPT Laser");
     gtk_window_set_default_size(GTK_WINDOW(window), 1240, 840);
-    gtk_widget_set_size_request(window, 980, 620);
+    gtk_widget_set_size_request(window, 720, 560);
     g_signal_connect(window, "close-request", G_CALLBACK(window_close_request), console);
 
     GtkWidget *header = adw_header_bar_new();
-    AdwWindowTitle *title = ADW_WINDOW_TITLE(adw_window_title_new("MS LEP", "JPT YDFLP-E3-100-M7 调试控制台"));
-    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(title));
+    console->window_title = ADW_WINDOW_TITLE(
+        adw_window_title_new("MS LEP", "JPT YDFLP-E3-100-M7 调试控制台"));
+    adw_header_bar_set_title_widget(ADW_HEADER_BAR(header), GTK_WIDGET(console->window_title));
     console->emergency_button = GTK_BUTTON(gtk_button_new_with_label("紧急关闭"));
     gtk_widget_add_css_class(GTK_WIDGET(console->emergency_button), "destructive-action");
     g_signal_connect(console->emergency_button, "clicked", G_CALLBACK(emergency_clicked), console);
@@ -2322,31 +2446,39 @@ GtkWidget *laser_console_create(AdwApplication *application)
 
     console->view_stack = ADW_VIEW_STACK(adw_view_stack_new());
     GtkWidget *root = gtk_box_new(GTK_ORIENTATION_VERTICAL, 0);
-    GtkWidget *status_bar = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 18);
-    gtk_widget_set_margin_start(status_bar, 16);
-    gtk_widget_set_margin_end(status_bar, 16);
-    gtk_widget_set_margin_top(status_bar, 10);
-    gtk_widget_set_margin_bottom(status_bar, 8);
-    gtk_box_append(GTK_BOX(status_bar),
-                   make_status_item("连接", "未连接", &console->connection_indicator,
-                                    &console->connection_label));
-    gtk_box_append(GTK_BOX(status_bar),
-                   make_status_item("设备", "报警状态未知", &console->device_indicator,
-                                    &console->device_status_label));
+    GtkFlowBox *status_bar = GTK_FLOW_BOX(gtk_flow_box_new());
+    gtk_flow_box_set_selection_mode(status_bar, GTK_SELECTION_NONE);
+    gtk_flow_box_set_homogeneous(status_bar, FALSE);
+    gtk_flow_box_set_min_children_per_line(status_bar, 1);
+    gtk_flow_box_set_max_children_per_line(status_bar, 6);
+    gtk_flow_box_set_row_spacing(status_bar, 6);
+    gtk_flow_box_set_column_spacing(status_bar, 18);
+    gtk_widget_set_margin_start(GTK_WIDGET(status_bar), 16);
+    gtk_widget_set_margin_end(GTK_WIDGET(status_bar), 16);
+    gtk_widget_set_margin_top(GTK_WIDGET(status_bar), 8);
+    gtk_widget_set_margin_bottom(GTK_WIDGET(status_bar), 8);
+    gtk_flow_box_insert(status_bar,
+                        make_status_item("连接", "未连接", &console->connection_indicator,
+                                         &console->connection_label), -1);
+    gtk_flow_box_insert(status_bar,
+                        make_status_item("设备", "报警状态未知", &console->device_indicator,
+                                         &console->device_status_label), -1);
     console->serial_status_label = GTK_LABEL(gtk_label_new("SN：未读取"));
     gtk_widget_add_css_class(GTK_WIDGET(console->serial_status_label), "dim-label");
-    gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->serial_status_label));
-    gtk_box_append(GTK_BOX(status_bar),
-                   make_status_item("命令", "等待命令", &console->command_indicator,
-                                    &console->last_command_label));
+    gtk_flow_box_insert(status_bar, GTK_WIDGET(console->serial_status_label), -1);
+    gtk_flow_box_insert(status_bar,
+                        make_status_item("命令", "等待命令", &console->command_indicator,
+                                         &console->last_command_label), -1);
     console->last_error_label = GTK_LABEL(gtk_label_new(""));
-    gtk_widget_set_hexpand(GTK_WIDGET(console->last_error_label), TRUE);
-    gtk_label_set_xalign(console->last_error_label, 1.0f);
-    gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->last_error_label));
+    gtk_label_set_max_width_chars(console->last_error_label, 32);
+    gtk_label_set_ellipsize(console->last_error_label, PANGO_ELLIPSIZE_END);
+    gtk_label_set_selectable(console->last_error_label, TRUE);
+    gtk_widget_add_css_class(GTK_WIDGET(console->last_error_label), "dim-label");
+    gtk_flow_box_insert(status_bar, GTK_WIDGET(console->last_error_label), -1);
     gtk_widget_add_css_class(GTK_WIDGET(console->disconnect_button), "flat");
     gtk_widget_set_visible(GTK_WIDGET(console->disconnect_button), FALSE);
-    gtk_box_append(GTK_BOX(status_bar), GTK_WIDGET(console->disconnect_button));
-    gtk_box_append(GTK_BOX(root), status_bar);
+    gtk_flow_box_insert(status_bar, GTK_WIDGET(console->disconnect_button), -1);
+    gtk_box_append(GTK_BOX(root), GTK_WIDGET(status_bar));
 
     gtk_widget_set_hexpand(GTK_WIDGET(console->view_stack), TRUE);
     gtk_widget_set_vexpand(GTK_WIDGET(console->view_stack), TRUE);
@@ -2369,11 +2501,13 @@ GtkWidget *laser_console_create(AdwApplication *application)
     adw_view_stack_add_titled_with_icon(console->view_stack, log_page,
                                         "log", "HEX 日志", "utilities-terminal-symbolic");
     adw_view_stack_add_titled_with_icon(console->view_stack, protocol_page,
-                                        "protocol", "协议工具", "utilities-terminal-symbolic");
+                                        "protocol", "协议工具", "network-server-symbolic");
     adw_view_stack_add_titled_with_icon(console->view_stack, alarm_history_page,
                                         "alarm-history", "报警记录", "dialog-warning-symbolic");
     adw_view_stack_add_titled_with_icon(console->view_stack, extension_page,
                                         "extension", "型号扩展", "applications-engineering-symbolic");
+    g_signal_connect(console->view_stack, "notify::visible-child",
+                     G_CALLBACK(navigation_page_changed), console);
     gtk_widget_set_vexpand(GTK_WIDGET(console->view_stack), TRUE);
     gtk_box_append(GTK_BOX(root), GTK_WIDGET(console->view_stack));
 
@@ -2422,12 +2556,16 @@ GtkWidget *laser_console_create(AdwApplication *application)
     adw_toolbar_view_set_content(toolbar_view, GTK_WIDGET(console->main_stack));
     adw_application_window_set_content(ADW_APPLICATION_WINDOW(window), GTK_WIDGET(toolbar_view));
     AdwBreakpointCondition *condition = adw_breakpoint_condition_new_length(
-        ADW_BREAKPOINT_CONDITION_MAX_WIDTH, 760, ADW_LENGTH_UNIT_SP);
+        ADW_BREAKPOINT_CONDITION_MAX_WIDTH, 980, ADW_LENGTH_UNIT_SP);
     AdwBreakpoint *breakpoint = adw_breakpoint_new(condition);
     GValue orientation = G_VALUE_INIT;
     g_value_init(&orientation, GTK_TYPE_ORIENTATION);
     g_value_set_enum(&orientation, GTK_ORIENTATION_VERTICAL);
     adw_breakpoint_add_setter(breakpoint, G_OBJECT(console->connection_split_box),
+                              "orientation", &orientation);
+    adw_breakpoint_add_setter(breakpoint, G_OBJECT(console->control_columns),
+                              "orientation", &orientation);
+    adw_breakpoint_add_setter(breakpoint, G_OBJECT(console->monitor_columns),
                               "orientation", &orientation);
     adw_application_window_add_breakpoint(ADW_APPLICATION_WINDOW(window), breakpoint);
     g_value_unset(&orientation);
