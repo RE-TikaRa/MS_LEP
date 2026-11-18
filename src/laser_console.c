@@ -34,8 +34,12 @@ static void show_sidebar_toggled(GtkToggleButton *button, gpointer user_data);
 static void navigation_page_changed(GObject *object, GParamSpec *pspec, gpointer user_data);
 static void alarm_history_buffer_changed(GtkTextBuffer *buffer, gpointer user_data);
 static void set_last_error(LaserConsole *console, const gchar *text);
-static void close_visible_popovers(GtkWidget *widget);
 static void show_connection_error(LaserConsole *console, const gchar *title, const gchar *message);
+static void show_serial_picker(LaserConsole *console);
+static void close_serial_picker(LaserConsole *console);
+static void serial_picker_row_activated(GtkListBox *list, GtkListBoxRow *row, gpointer user_data);
+static void serial_port_button_clicked(GtkButton *button, gpointer user_data);
+static gboolean serial_picker_close_request(GtkWindow *window, gpointer user_data);
 static void shutdown_next(LaserConsole *console);
 static void shutdown_control_mode_callback(const JptClientResult *result, gpointer user_data);
 static void shutdown_write_callback(const JptClientResult *result, gpointer user_data);
@@ -73,8 +77,7 @@ struct _LaserConsole {
     GtkLabel *control_source_label;
     GtkToggleButton *serial_mode;
     GtkToggleButton *tcp_mode;
-    GtkDropDown *serial_port_dropdown;
-    GtkStringList *serial_port_model;
+    GtkButton *serial_port_button;
     GtkEntry *manual_serial_entry;
     GtkEntry *endpoint_entry;
     GtkStack *endpoint_stack;
@@ -84,6 +87,7 @@ struct _LaserConsole {
     GtkButton *select_serial_button;
     GtkWidget *serial_controls;
     GtkWidget *endpoint_row;
+    GtkWindow *serial_picker_window;
     AdwExpanderRow *serial_settings_row;
     AdwComboRow *baud_dropdown;
     AdwComboRow *data_bits_dropdown;
@@ -162,6 +166,9 @@ struct _LaserConsole {
     GtkProgressBar *power_bar;
     GPtrArray *write_buttons;
     GPtrArray *serial_ports;
+    gchar *selected_serial_path;
+    gchar *selected_serial_display_name;
+    gboolean manual_serial_selected;
     JptClient *client;
     JptTelemetry telemetry;
     guint poll_source;
@@ -414,7 +421,7 @@ static void append_serial_directory(LaserConsole *console, GHashTable *seen,
         gchar *target = g_file_read_link(link_path, NULL);
         if (target != NULL) {
             gchar *path = g_canonicalize_filename(target, directory);
-            gchar *display_name = g_strdup_printf("%s · %s", name, path);
+            gchar *display_name = g_strdup_printf("%s (%s)", name, path);
             append_serial_port(console, seen, path, display_name);
             g_free(display_name);
             g_free(path);
@@ -429,17 +436,7 @@ static void append_serial_directory(LaserConsole *console, GHashTable *seen,
 
 static void refresh_serial_ports(LaserConsole *console)
 {
-    gchar *selected_path = NULL;
-    guint selected = gtk_drop_down_get_selected(console->serial_port_dropdown);
-    gboolean manual_selected = selected == console->serial_ports->len + 1;
-    if (selected > 0 && selected <= console->serial_ports->len) {
-        SerialPort *port = g_ptr_array_index(console->serial_ports, selected - 1);
-        selected_path = g_strdup(port->path);
-    }
-
     g_ptr_array_set_size(console->serial_ports, 0);
-    gtk_string_list_splice(console->serial_port_model, 0,
-                           g_list_model_get_n_items(G_LIST_MODEL(console->serial_port_model)), NULL);
     GHashTable *seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
     append_serial_directory(console, seen, "/dev/serial/by-id");
     append_serial_directory(console, seen, "/dev/serial/by-path");
@@ -461,7 +458,7 @@ static void refresh_serial_ports(LaserConsole *console)
             }
             if (type != NULL) {
                 gchar *path = g_build_filename("/dev", name, NULL);
-                gchar *display_name = g_strdup_printf("%s · %s", type, path);
+                gchar *display_name = g_strdup_printf("%s (%s)", type, path);
                 append_serial_port(console, seen, path, display_name);
                 g_free(display_name);
                 g_free(path);
@@ -474,55 +471,137 @@ static void refresh_serial_ports(LaserConsole *console)
     g_hash_table_unref(seen);
 
     g_ptr_array_sort(console->serial_ports, serial_port_compare);
-    gtk_string_list_append(console->serial_port_model,
-                           console->serial_ports->len == 0 ? "未发现串口设备" : "选择串口设备…");
-    guint selected_index = 0;
-    for (guint i = 0; i < console->serial_ports->len; i++) {
-        SerialPort *port = g_ptr_array_index(console->serial_ports, i);
-        gtk_string_list_append(console->serial_port_model, port->display_name);
-        if (selected_path != NULL && g_str_equal(selected_path, port->path)) {
-            selected_index = i + 1;
+    if (console->selected_serial_path != NULL) {
+        gboolean found = FALSE;
+        for (guint i = 0; i < console->serial_ports->len; i++) {
+            SerialPort *port = g_ptr_array_index(console->serial_ports, i);
+            if (g_str_equal(console->selected_serial_path, port->path)) {
+                found = TRUE;
+                g_free(console->selected_serial_display_name);
+                console->selected_serial_display_name = g_strdup(port->display_name);
+                break;
+            }
+        }
+        if (!found) {
+            g_clear_pointer(&console->selected_serial_path, g_free);
+            g_clear_pointer(&console->selected_serial_display_name, g_free);
         }
     }
-    gtk_string_list_append(console->serial_port_model, "手动输入设备路径…");
-    if (selected_path == NULL && manual_selected) {
-        selected_index = console->serial_ports->len + 1;
+    if (console->serial_port_button != NULL) {
+        gtk_button_set_label(console->serial_port_button,
+                             console->selected_serial_display_name != NULL
+                                 ? console->selected_serial_display_name
+                                 : console->serial_ports->len == 0 ? "未发现串口设备" : "选择串口设备…");
     }
-    gtk_drop_down_set_selected(console->serial_port_dropdown, selected_index);
-    g_free(selected_path);
 }
 
 static void update_transport_controls(LaserConsole *console)
 {
     gboolean serial = gtk_toggle_button_get_active(console->serial_mode);
-    guint selected = gtk_drop_down_get_selected(console->serial_port_dropdown);
-    gboolean manual = selected == console->serial_ports->len + 1;
     gtk_stack_set_visible_child_name(console->endpoint_stack, serial ? "serial" : "tcp");
-    gtk_widget_set_visible(GTK_WIDGET(console->serial_port_dropdown), serial && !manual);
-    gtk_widget_set_visible(GTK_WIDGET(console->refresh_serial_button), serial && !manual);
-    gtk_widget_set_visible(GTK_WIDGET(console->manual_serial_entry), serial && manual);
-    gtk_widget_set_visible(GTK_WIDGET(console->select_serial_button), serial && manual);
+    gtk_widget_set_visible(GTK_WIDGET(console->serial_port_button), serial && !console->manual_serial_selected);
+    gtk_widget_set_visible(GTK_WIDGET(console->refresh_serial_button), serial && !console->manual_serial_selected);
+    gtk_widget_set_visible(GTK_WIDGET(console->manual_serial_entry), serial && console->manual_serial_selected);
+    gtk_widget_set_visible(GTK_WIDGET(console->select_serial_button), serial && console->manual_serial_selected);
     gtk_widget_set_visible(GTK_WIDGET(console->serial_settings_row), serial);
 }
 
-static void serial_port_selection_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
+static void serial_picker_row_activated(GtkListBox *list, GtkListBoxRow *row, gpointer user_data)
 {
-    (void)object;
-    (void)pspec;
-    update_transport_controls(user_data);
+    (void)list;
+    LaserConsole *console = user_data;
+    GtkWidget *item = gtk_list_box_row_get_child(row);
+    SerialPort *port = item != NULL ? g_object_get_data(G_OBJECT(item), "serial-port") : NULL;
+    g_clear_pointer(&console->selected_serial_path, g_free);
+    g_clear_pointer(&console->selected_serial_display_name, g_free);
+    if (port == NULL) {
+        console->manual_serial_selected = TRUE;
+    } else {
+        console->manual_serial_selected = FALSE;
+        console->selected_serial_path = g_strdup(port->path);
+        console->selected_serial_display_name = g_strdup(port->display_name);
+    }
+    gtk_button_set_label(console->serial_port_button,
+                         port != NULL ? port->display_name : "手动输入设备路径…");
+    update_transport_controls(console);
+    close_serial_picker(console);
 }
 
-static void close_visible_popovers(GtkWidget *widget)
+static void close_serial_picker(LaserConsole *console)
 {
-    if (GTK_IS_POPOVER(widget) && gtk_widget_get_visible(widget)) {
-        gtk_popover_popdown(GTK_POPOVER(widget));
+    if (console->serial_picker_window != NULL) {
+        gtk_window_destroy(console->serial_picker_window);
+        console->serial_picker_window = NULL;
+    }
+}
+
+static void show_serial_picker(LaserConsole *console)
+{
+    if (console->serial_picker_window != NULL) {
+        gtk_window_present(console->serial_picker_window);
+        return;
     }
 
-    for (GtkWidget *child = gtk_widget_get_first_child(widget);
-         child != NULL;
-         child = gtk_widget_get_next_sibling(child)) {
-        close_visible_popovers(child);
+    GtkWindow *window = GTK_WINDOW(gtk_window_new());
+    console->serial_picker_window = window;
+    gtk_window_set_title(window, "选择串口设备");
+    gtk_window_set_transient_for(window, GTK_WINDOW(console->window));
+    gtk_window_set_modal(window, TRUE);
+    gtk_window_set_default_size(window, 520, 420);
+    g_signal_connect(window, "close-request", G_CALLBACK(serial_picker_close_request), console);
+
+    GtkWidget *box = gtk_box_new(GTK_ORIENTATION_VERTICAL, 12);
+    gtk_widget_set_margin_start(box, 20);
+    gtk_widget_set_margin_end(box, 20);
+    gtk_widget_set_margin_top(box, 20);
+    gtk_widget_set_margin_bottom(box, 20);
+    GtkWidget *description = gtk_label_new("选择设备后将用于下一次串口连接。");
+    gtk_label_set_xalign(GTK_LABEL(description), 0.0f);
+    gtk_widget_add_css_class(description, "dim-label");
+    gtk_box_append(GTK_BOX(box), description);
+
+    GtkWidget *list = gtk_list_box_new();
+    gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_SINGLE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(list), TRUE);
+    gtk_widget_add_css_class(list, "boxed-list");
+    g_signal_connect(list, "row-activated", G_CALLBACK(serial_picker_row_activated), console);
+    for (guint i = 0; i < console->serial_ports->len; i++) {
+        SerialPort *port = g_ptr_array_index(console->serial_ports, i);
+        GtkWidget *row = adw_action_row_new();
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), port->display_name);
+        adw_action_row_set_subtitle(ADW_ACTION_ROW(row), port->path);
+        g_object_set_data(G_OBJECT(row), "serial-port", port);
+        gtk_list_box_append(GTK_LIST_BOX(list), row);
     }
+    GtkWidget *manual_row = adw_action_row_new();
+    adw_preferences_row_set_title(ADW_PREFERENCES_ROW(manual_row), "手动输入设备路径…");
+    adw_action_row_set_subtitle(ADW_ACTION_ROW(manual_row), "例如 /dev/ttyUSB0");
+    gtk_list_box_append(GTK_LIST_BOX(list), manual_row);
+    GtkWidget *scroll = gtk_scrolled_window_new();
+    gtk_widget_set_vexpand(scroll, TRUE);
+    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), list);
+    gtk_box_append(GTK_BOX(box), scroll);
+    GtkWidget *cancel = gtk_button_new_with_label("取消");
+    gtk_widget_set_halign(cancel, GTK_ALIGN_END);
+    g_signal_connect_swapped(cancel, "clicked", G_CALLBACK(close_serial_picker), console);
+    gtk_box_append(GTK_BOX(box), cancel);
+    gtk_window_set_child(window, box);
+    gtk_window_present(window);
+}
+
+static gboolean serial_picker_close_request(GtkWindow *window, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    if (console->serial_picker_window == window) {
+        console->serial_picker_window = NULL;
+    }
+    return FALSE;
+}
+
+static void serial_port_button_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    show_serial_picker(user_data);
 }
 
 static void transport_mode_changed(GtkToggleButton *button, gpointer user_data)
@@ -532,10 +611,7 @@ static void transport_mode_changed(GtkToggleButton *button, gpointer user_data)
     }
 
     LaserConsole *console = user_data;
-    GtkRoot *root = gtk_widget_get_root(GTK_WIDGET(console->serial_port_dropdown));
-    if (root != NULL) {
-        close_visible_popovers(GTK_WIDGET(root));
-    }
+    close_serial_picker(console);
     update_transport_controls(console);
 }
 
@@ -549,8 +625,7 @@ static void refresh_serial_clicked(GtkButton *button, gpointer user_data)
 static void select_serial_list_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
-    LaserConsole *console = user_data;
-    gtk_drop_down_set_selected(console->serial_port_dropdown, 0);
+    show_serial_picker(user_data);
 }
 
 static void trace_callback(guint16 command, GBytes *transmitted, GBytes *received,
@@ -981,7 +1056,7 @@ static void update_output_buttons(LaserConsole *console)
     gboolean selecting_endpoint = !console->connected && !console->connection_pending;
     gtk_widget_set_sensitive(GTK_WIDGET(console->serial_mode), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->tcp_mode), selecting_endpoint);
-    gtk_widget_set_sensitive(GTK_WIDGET(console->serial_port_dropdown), selecting_endpoint);
+    gtk_widget_set_sensitive(GTK_WIDGET(console->serial_port_button), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->refresh_serial_button), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->select_serial_button), selecting_endpoint);
     gtk_widget_set_sensitive(GTK_WIDGET(console->manual_serial_entry), selecting_endpoint);
@@ -1292,11 +1367,9 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
     gboolean serial = gtk_toggle_button_get_active(console->serial_mode);
     const gchar *endpoint = gtk_editable_get_text(GTK_EDITABLE(console->endpoint_entry));
     if (serial) {
-        guint selected = gtk_drop_down_get_selected(console->serial_port_dropdown);
-        if (selected > 0 && selected <= console->serial_ports->len) {
-            SerialPort *port = g_ptr_array_index(console->serial_ports, selected - 1);
-            endpoint = port->path;
-        } else if (selected == console->serial_ports->len + 1) {
+        if (!console->manual_serial_selected && console->selected_serial_path != NULL) {
+            endpoint = console->selected_serial_path;
+        } else if (console->manual_serial_selected) {
             endpoint = gtk_editable_get_text(GTK_EDITABLE(console->manual_serial_entry));
             if (endpoint[0] == '\0') {
                 set_connection_state(console, "未填写串口路径", FALSE, TRUE);
@@ -2707,11 +2780,13 @@ static void release_console(LaserConsole *console)
         console->poll_source = 0;
     }
     console->closing = TRUE;
+    close_serial_picker(console);
     shutdown_dialog_destroy(console);
     jpt_client_free(console->client);
     g_ptr_array_unref(console->write_buttons);
     g_ptr_array_unref(console->serial_ports);
-    g_object_unref(console->serial_port_model);
+    g_free(console->selected_serial_path);
+    g_free(console->selected_serial_display_name);
     g_free(console);
 }
 
@@ -2740,7 +2815,6 @@ GtkWidget *laser_console_create(AdwApplication *application)
     console->client = jpt_client_new(trace_callback, console);
     console->write_buttons = g_ptr_array_new();
     console->serial_ports = g_ptr_array_new_with_free_func(serial_port_free);
-    console->serial_port_model = gtk_string_list_new(NULL);
 
     GtkWidget *window = adw_application_window_new(GTK_APPLICATION(application));
     console->window = window;
@@ -2771,14 +2845,16 @@ GtkWidget *laser_console_create(AdwApplication *application)
 
     console->serial_controls = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 6);
     gtk_widget_set_hexpand(console->serial_controls, TRUE);
-    console->serial_port_dropdown = GTK_DROP_DOWN(
-        gtk_drop_down_new(G_LIST_MODEL(console->serial_port_model), NULL));
-    gtk_widget_add_css_class(GTK_WIDGET(console->serial_port_dropdown), "card");
-    gtk_drop_down_set_enable_search(console->serial_port_dropdown, FALSE);
-    gtk_widget_set_size_request(GTK_WIDGET(console->serial_port_dropdown), 360, -1);
-    gtk_widget_set_hexpand(GTK_WIDGET(console->serial_port_dropdown), TRUE);
-    g_signal_connect(console->serial_port_dropdown, "notify::selected",
-                     G_CALLBACK(serial_port_selection_changed), console);
+    console->serial_port_button = GTK_BUTTON(gtk_button_new_with_label("选择串口设备…"));
+    gtk_widget_add_css_class(GTK_WIDGET(console->serial_port_button), "card");
+    gtk_widget_set_size_request(GTK_WIDGET(console->serial_port_button), 360, 44);
+    gtk_widget_set_hexpand(GTK_WIDGET(console->serial_port_button), TRUE);
+    gtk_widget_set_halign(GTK_WIDGET(console->serial_port_button), GTK_ALIGN_FILL);
+    gtk_widget_set_tooltip_text(GTK_WIDGET(console->serial_port_button), "打开串口设备选择窗口");
+    gtk_accessible_update_property(GTK_ACCESSIBLE(console->serial_port_button),
+                                   GTK_ACCESSIBLE_PROPERTY_LABEL, "选择串口设备", -1);
+    g_signal_connect(console->serial_port_button, "clicked",
+                     G_CALLBACK(serial_port_button_clicked), console);
     console->refresh_serial_button = GTK_BUTTON(gtk_button_new_from_icon_name("view-refresh-symbolic"));
     gtk_widget_set_size_request(GTK_WIDGET(console->refresh_serial_button), 44, 44);
     gtk_widget_set_tooltip_text(GTK_WIDGET(console->refresh_serial_button), "刷新串口设备");
@@ -2799,7 +2875,7 @@ GtkWidget *laser_console_create(AdwApplication *application)
                                    GTK_ACCESSIBLE_PROPERTY_LABEL, "选择检测到的串口", -1);
     g_signal_connect(console->select_serial_button, "clicked",
                      G_CALLBACK(select_serial_list_clicked), console);
-    gtk_box_append(GTK_BOX(console->serial_controls), GTK_WIDGET(console->serial_port_dropdown));
+    gtk_box_append(GTK_BOX(console->serial_controls), GTK_WIDGET(console->serial_port_button));
     gtk_box_append(GTK_BOX(console->serial_controls), GTK_WIDGET(console->refresh_serial_button));
     gtk_box_append(GTK_BOX(console->serial_controls), GTK_WIDGET(console->manual_serial_entry));
     gtk_box_append(GTK_BOX(console->serial_controls), GTK_WIDGET(console->select_serial_button));
