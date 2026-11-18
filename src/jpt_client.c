@@ -154,7 +154,6 @@ static gboolean client_read_telemetry(JptClient *client, JptTelemetry *telemetry
             !client_read_u16(client, JPT_CMD_READ_DEFAULT_PULSE_WIDTH, &telemetry->default_pulse_width, error) ||
             !client_read_u16(client, JPT_CMD_READ_LOCK_FREQUENCY, &telemetry->lock_frequency, error) ||
             !client_read_u16(client, JPT_CMD_READ_PARAMETER_SELECT, &telemetry->parameter_select, error) ||
-            !client_read_u16(client, JPT_CMD_READ_CONTROL_MODE, &telemetry->control_mode, error) ||
             !client_read_u16(client, JPT_CMD_READ_LOCK_POWER, &telemetry->lock_power, error) ||
             !client_read_u16(client, JPT_CMD_READ_RED_LIGHT_POWER, &telemetry->red_light_power, error) ||
             !client_read_u16(client, JPT_CMD_READ_LOCK_PARAMETER, &telemetry->lock_options, error)) {
@@ -162,7 +161,8 @@ static gboolean client_read_telemetry(JptClient *client, JptTelemetry *telemetry
         }
     }
 
-    if (!client_read_u16(client, JPT_CMD_STATUS, &telemetry->status, error) ||
+    if (!client_read_u16(client, JPT_CMD_READ_CONTROL_MODE, &telemetry->control_mode, error) ||
+        !client_read_u16(client, JPT_CMD_STATUS, &telemetry->status, error) ||
         !client_read_u16(client, JPT_CMD_REAL_POWER, &telemetry->real_power_percent, error) ||
         !client_read_u16(client, JPT_CMD_REAL_PULSE_WIDTH, &telemetry->real_pulse_width, error) ||
         !client_read_u16(client, JPT_CMD_REAL_FREQUENCY, &telemetry->real_frequency, error)) {

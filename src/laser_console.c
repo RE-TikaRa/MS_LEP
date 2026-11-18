@@ -37,7 +37,9 @@ static void set_last_error(LaserConsole *console, const gchar *text);
 static void show_connection_error(LaserConsole *console, const gchar *title, const gchar *message);
 static void show_serial_picker(LaserConsole *console);
 static void close_serial_picker(LaserConsole *console);
-static void serial_picker_row_activated(GtkListBox *list, GtkListBoxRow *row, gpointer user_data);
+static void serial_picker_row_selected(GtkListBox *list, GtkListBoxRow *row, gpointer user_data);
+static void serial_picker_refresh_clicked(GtkButton *button, gpointer user_data);
+static void serial_picker_use_clicked(GtkButton *button, gpointer user_data);
 static void serial_port_button_clicked(GtkButton *button, gpointer user_data);
 static gboolean serial_picker_close_request(GtkWindow *window, gpointer user_data);
 static void shutdown_next(LaserConsole *console);
@@ -88,6 +90,9 @@ struct _LaserConsole {
     GtkWidget *serial_controls;
     GtkWidget *endpoint_row;
     GtkWindow *serial_picker_window;
+    GtkListBox *serial_picker_list;
+    GtkLabel *serial_picker_selection_label;
+    GtkButton *serial_picker_use_button;
     AdwExpanderRow *serial_settings_row;
     AdwComboRow *baud_dropdown;
     AdwComboRow *data_bits_dropdown;
@@ -169,6 +174,8 @@ struct _LaserConsole {
     gchar *selected_serial_path;
     gchar *selected_serial_display_name;
     gboolean manual_serial_selected;
+    SerialPort *serial_picker_selected_port;
+    gboolean serial_picker_manual_selected;
     JptClient *client;
     JptTelemetry telemetry;
     guint poll_source;
@@ -489,7 +496,9 @@ static void refresh_serial_ports(LaserConsole *console)
     }
     if (console->serial_port_button != NULL) {
         gtk_button_set_label(console->serial_port_button,
-                             console->selected_serial_display_name != NULL
+                             console->manual_serial_selected
+                                 ? "手动输入设备路径…"
+                                 : console->selected_serial_display_name != NULL
                                  ? console->selected_serial_display_name
                                  : console->serial_ports->len == 0 ? "未发现串口设备" : "选择串口设备…");
     }
@@ -506,23 +515,57 @@ static void update_transport_controls(LaserConsole *console)
     gtk_widget_set_visible(GTK_WIDGET(console->serial_settings_row), serial);
 }
 
-static void serial_picker_row_activated(GtkListBox *list, GtkListBoxRow *row, gpointer user_data)
+static void serial_picker_row_selected(GtkListBox *list, GtkListBoxRow *row, gpointer user_data)
 {
     (void)list;
     LaserConsole *console = user_data;
-    GtkWidget *item = gtk_list_box_row_get_child(row);
-    SerialPort *port = item != NULL ? g_object_get_data(G_OBJECT(item), "serial-port") : NULL;
+    GtkWidget *item = row != NULL ? gtk_list_box_row_get_child(row) : NULL;
+    console->serial_picker_selected_port = item != NULL
+        ? g_object_get_data(G_OBJECT(item), "serial-port")
+        : NULL;
+    console->serial_picker_manual_selected = item != NULL &&
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "manual-path"));
+    if (console->serial_picker_manual_selected) {
+        gtk_label_set_text(console->serial_picker_selection_label, "已选中手动输入设备路径");
+    } else if (console->serial_picker_selected_port != NULL) {
+        gchar *text = g_strdup_printf("已选中：%s", console->serial_picker_selected_port->display_name);
+        gtk_label_set_text(console->serial_picker_selection_label, text);
+        g_free(text);
+    } else {
+        gtk_label_set_text(console->serial_picker_selection_label, "请选择一个串口设备");
+    }
+    gtk_widget_set_sensitive(GTK_WIDGET(console->serial_picker_use_button),
+                             console->serial_picker_manual_selected ||
+                             console->serial_picker_selected_port != NULL);
+}
+
+static void serial_picker_refresh_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    LaserConsole *console = user_data;
+    close_serial_picker(console);
+    refresh_serial_ports(console);
+    show_serial_picker(console);
+}
+
+static void serial_picker_use_clicked(GtkButton *button, gpointer user_data)
+{
+    (void)button;
+    LaserConsole *console = user_data;
     g_clear_pointer(&console->selected_serial_path, g_free);
     g_clear_pointer(&console->selected_serial_display_name, g_free);
-    if (port == NULL) {
+    if (console->serial_picker_manual_selected) {
         console->manual_serial_selected = TRUE;
-    } else {
+        gtk_button_set_label(console->serial_port_button, "手动输入设备路径…");
+    } else if (console->serial_picker_selected_port != NULL) {
+        SerialPort *port = console->serial_picker_selected_port;
         console->manual_serial_selected = FALSE;
         console->selected_serial_path = g_strdup(port->path);
         console->selected_serial_display_name = g_strdup(port->display_name);
+        gtk_button_set_label(console->serial_port_button, port->display_name);
+    } else {
+        return;
     }
-    gtk_button_set_label(console->serial_port_button,
-                         port != NULL ? port->display_name : "手动输入设备路径…");
     update_transport_controls(console);
     close_serial_picker(console);
 }
@@ -532,7 +575,12 @@ static void close_serial_picker(LaserConsole *console)
     if (console->serial_picker_window != NULL) {
         gtk_window_destroy(console->serial_picker_window);
         console->serial_picker_window = NULL;
+        console->serial_picker_list = NULL;
+        console->serial_picker_selection_label = NULL;
+        console->serial_picker_use_button = NULL;
     }
+    console->serial_picker_selected_port = NULL;
+    console->serial_picker_manual_selected = FALSE;
 }
 
 static void show_serial_picker(LaserConsole *console)
@@ -541,6 +589,9 @@ static void show_serial_picker(LaserConsole *console)
         gtk_window_present(console->serial_picker_window);
         return;
     }
+
+    console->serial_picker_selected_port = NULL;
+    console->serial_picker_manual_selected = FALSE;
 
     GtkWindow *window = GTK_WINDOW(gtk_window_new());
     console->serial_picker_window = window;
@@ -555,16 +606,19 @@ static void show_serial_picker(LaserConsole *console)
     gtk_widget_set_margin_end(box, 20);
     gtk_widget_set_margin_top(box, 20);
     gtk_widget_set_margin_bottom(box, 20);
-    GtkWidget *description = gtk_label_new("选择设备后将用于下一次串口连接。");
+    GtkWidget *description = gtk_label_new(
+        "点选一项查看当前选择，核对设备名称和端口路径后，再点击“使用此端口”。");
     gtk_label_set_xalign(GTK_LABEL(description), 0.0f);
     gtk_widget_add_css_class(description, "dim-label");
     gtk_box_append(GTK_BOX(box), description);
 
     GtkWidget *list = gtk_list_box_new();
+    console->serial_picker_list = GTK_LIST_BOX(list);
     gtk_list_box_set_selection_mode(GTK_LIST_BOX(list), GTK_SELECTION_SINGLE);
-    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(list), TRUE);
+    gtk_list_box_set_activate_on_single_click(GTK_LIST_BOX(list), FALSE);
     gtk_widget_add_css_class(list, "boxed-list");
-    g_signal_connect(list, "row-activated", G_CALLBACK(serial_picker_row_activated), console);
+    g_signal_connect(list, "row-selected", G_CALLBACK(serial_picker_row_selected), console);
+    GtkListBoxRow *initial_selected_row = NULL;
     for (guint i = 0; i < console->serial_ports->len; i++) {
         SerialPort *port = g_ptr_array_index(console->serial_ports, i);
         GtkWidget *row = adw_action_row_new();
@@ -572,21 +626,45 @@ static void show_serial_picker(LaserConsole *console)
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), port->path);
         g_object_set_data(G_OBJECT(row), "serial-port", port);
         gtk_list_box_append(GTK_LIST_BOX(list), row);
+        if (g_strcmp0(port->path, console->selected_serial_path) == 0) {
+            initial_selected_row = GTK_LIST_BOX_ROW(gtk_widget_get_parent(row));
+        }
     }
     GtkWidget *manual_row = adw_action_row_new();
     adw_preferences_row_set_title(ADW_PREFERENCES_ROW(manual_row), "手动输入设备路径…");
     adw_action_row_set_subtitle(ADW_ACTION_ROW(manual_row), "例如 /dev/ttyUSB0");
+    g_object_set_data(G_OBJECT(manual_row), "manual-path", GINT_TO_POINTER(TRUE));
     gtk_list_box_append(GTK_LIST_BOX(list), manual_row);
+    if (console->manual_serial_selected) {
+        initial_selected_row = GTK_LIST_BOX_ROW(gtk_widget_get_parent(manual_row));
+    }
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_widget_set_vexpand(scroll, TRUE);
     gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(scroll), list);
     gtk_box_append(GTK_BOX(box), scroll);
+
+    GtkWidget *actions = gtk_box_new(GTK_ORIENTATION_HORIZONTAL, 8);
+    console->serial_picker_selection_label = GTK_LABEL(gtk_label_new("请选择一个串口设备"));
+    gtk_label_set_xalign(console->serial_picker_selection_label, 0.0f);
+    gtk_widget_set_hexpand(GTK_WIDGET(console->serial_picker_selection_label), TRUE);
+    gtk_widget_add_css_class(GTK_WIDGET(console->serial_picker_selection_label), "dim-label");
+    gtk_box_append(GTK_BOX(actions), GTK_WIDGET(console->serial_picker_selection_label));
+    GtkWidget *refresh = gtk_button_new_with_label("刷新");
+    g_signal_connect(refresh, "clicked", G_CALLBACK(serial_picker_refresh_clicked), console);
+    gtk_box_append(GTK_BOX(actions), refresh);
     GtkWidget *cancel = gtk_button_new_with_label("取消");
-    gtk_widget_set_halign(cancel, GTK_ALIGN_END);
     g_signal_connect_swapped(cancel, "clicked", G_CALLBACK(close_serial_picker), console);
-    gtk_box_append(GTK_BOX(box), cancel);
+    gtk_box_append(GTK_BOX(actions), cancel);
+    console->serial_picker_use_button = GTK_BUTTON(gtk_button_new_with_label("使用此端口"));
+    gtk_widget_add_css_class(GTK_WIDGET(console->serial_picker_use_button), "suggested-action");
+    gtk_widget_set_sensitive(GTK_WIDGET(console->serial_picker_use_button), FALSE);
+    g_signal_connect(console->serial_picker_use_button, "clicked",
+                     G_CALLBACK(serial_picker_use_clicked), console);
+    gtk_box_append(GTK_BOX(actions), GTK_WIDGET(console->serial_picker_use_button));
+    gtk_box_append(GTK_BOX(box), actions);
     gtk_window_set_child(window, box);
     gtk_window_present(window);
+    gtk_list_box_select_row(console->serial_picker_list, initial_selected_row);
 }
 
 static gboolean serial_picker_close_request(GtkWindow *window, gpointer user_data)
@@ -594,6 +672,11 @@ static gboolean serial_picker_close_request(GtkWindow *window, gpointer user_dat
     LaserConsole *console = user_data;
     if (console->serial_picker_window == window) {
         console->serial_picker_window = NULL;
+        console->serial_picker_list = NULL;
+        console->serial_picker_selection_label = NULL;
+        console->serial_picker_use_button = NULL;
+        console->serial_picker_selected_port = NULL;
+        console->serial_picker_manual_selected = FALSE;
     }
     return FALSE;
 }
@@ -1007,7 +1090,10 @@ static void update_output_buttons(LaserConsole *console)
     gtk_widget_set_visible(GTK_WIDGET(console->emergency_button), ready);
     gtk_widget_set_sensitive(GTK_WIDGET(console->apply_parameters_button), ready);
     if (console->raw_read_button != NULL) {
-        gtk_widget_set_sensitive(GTK_WIDGET(console->raw_read_button), ready);
+        guint selected = gtk_drop_down_get_selected(console->raw_command_dropdown);
+        gboolean readable = selected < G_N_ELEMENTS(protocol_commands) &&
+            protocol_commands[selected].readable;
+        gtk_widget_set_sensitive(GTK_WIDGET(console->raw_read_button), ready && readable);
         gtk_widget_set_sensitive(GTK_WIDGET(console->raw_send_button),
                                  ready && console->protocol_ack != NULL &&
                                  gtk_check_button_get_active(console->protocol_ack));
@@ -1072,6 +1158,17 @@ static void update_output_buttons(LaserConsole *console)
     }
 }
 
+static void update_control_source_label(LaserConsole *console)
+{
+    if (console->control_source_label == NULL) {
+        return;
+    }
+    guint16 control_mode = console->telemetry.control_mode & 0x1F;
+    const gchar *mode = control_mode == 0x1F ? "MS_LEP 内控" :
+        control_mode == 0 ? "JCZ/DB25 外控" : "混合控制";
+    gtk_label_set_text(console->control_source_label, mode);
+}
+
 static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetry)
 {
     if (console->alarm_history_initialized && console->last_alarm_state != telemetry->alarm_state) {
@@ -1082,18 +1179,16 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     console->telemetry.status = telemetry->status;
     jpt_device_decode_status(telemetry->status, &console->telemetry);
     console->telemetry.control_mode = telemetry->control_mode;
-    if (console->control_source_label != NULL) {
-        const gchar *mode = telemetry->control_mode == 0x1F ? "MS_LEP 内控" :
-            telemetry->control_mode == 0 ? "JCZ/DB25 外控" : "混合控制";
-        gtk_label_set_text(console->control_source_label, mode);
+    update_control_source_label(console);
+    if (!console->initialized) {
+        console->telemetry.parameter_select = telemetry->parameter_select;
+        console->telemetry.lock_options = telemetry->lock_options;
+        console->telemetry.default_simmer = telemetry->default_simmer;
+        console->telemetry.default_pulse_width = telemetry->default_pulse_width;
+        console->telemetry.lock_frequency = telemetry->lock_frequency;
+        console->telemetry.lock_power = telemetry->lock_power;
+        console->telemetry.red_light_power = telemetry->red_light_power;
     }
-    console->telemetry.parameter_select = telemetry->parameter_select;
-    console->telemetry.lock_options = telemetry->lock_options;
-    console->telemetry.default_simmer = telemetry->default_simmer;
-    console->telemetry.default_pulse_width = telemetry->default_pulse_width;
-    console->telemetry.lock_frequency = telemetry->lock_frequency;
-    console->telemetry.lock_power = telemetry->lock_power;
-    console->telemetry.red_light_power = telemetry->red_light_power;
     console->telemetry.real_power_percent = telemetry->real_power_percent;
     console->telemetry.real_pulse_width = telemetry->real_pulse_width;
     console->telemetry.real_frequency = telemetry->real_frequency;
@@ -1291,12 +1386,6 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             adw_spin_row_set_value(console->frequency_spin, result->telemetry.real_frequency);
             adw_spin_row_set_value(console->pulse_spin, result->telemetry.real_pulse_width);
             console->updating_controls = TRUE;
-            gtk_check_button_set_active(console->gui_mode, result->telemetry.control_mode == 0x1f);
-            gtk_check_button_set_active(console->free_mode, result->telemetry.control_mode != 0x1f);
-            for (guint i = 0; i < G_N_ELEMENTS(console->control_options); i++) {
-                gtk_check_button_set_active(console->control_options[i],
-                                            (result->telemetry.control_mode & (1u << i)) != 0);
-            }
             const guint parameter_bits[] = {0, 1, 3, 4, 5, 6};
             for (guint i = 0; i < G_N_ELEMENTS(console->parameter_options); i++) {
                 gtk_check_button_set_active(console->parameter_options[i],
@@ -1312,6 +1401,15 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             gtk_stack_set_visible_child_name(console->main_stack, "workbench");
             adw_overlay_split_view_set_show_sidebar(console->workbench_split_view, TRUE);
         }
+        guint16 control_mode = console->telemetry.control_mode & 0x1F;
+        console->updating_controls = TRUE;
+        gtk_check_button_set_active(console->gui_mode, control_mode == 0x1F);
+        gtk_check_button_set_active(console->free_mode, control_mode != 0x1F);
+        for (guint i = 0; i < G_N_ELEMENTS(console->control_options); i++) {
+            gtk_check_button_set_active(console->control_options[i],
+                                        (control_mode & (1u << i)) != 0);
+        }
+        console->updating_controls = FALSE;
         update_device_status(console);
         update_output_buttons(console);
         if (console->poll_source == 0 && !console->shutdown_in_progress) {
@@ -1355,6 +1453,28 @@ static gboolean poll_tick(gpointer user_data)
     return G_SOURCE_CONTINUE;
 }
 
+static gboolean parse_tcp_port(const gchar *text, guint16 *port)
+{
+    if (text == NULL || text[0] == '\0') {
+        return FALSE;
+    }
+    guint64 value = 0;
+    for (const gchar *digit = text; *digit != '\0'; digit++) {
+        if (!g_ascii_isdigit(*digit)) {
+            return FALSE;
+        }
+        value = value * 10 + (*digit - '0');
+        if (value > G_MAXUINT16) {
+            return FALSE;
+        }
+    }
+    if (value == 0) {
+        return FALSE;
+    }
+    *port = (guint16)value;
+    return TRUE;
+}
+
 static void connect_clicked(GtkButton *button, gpointer user_data)
 {
     (void)button;
@@ -1366,6 +1486,8 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
 
     gboolean serial = gtk_toggle_button_get_active(console->serial_mode);
     const gchar *endpoint = gtk_editable_get_text(GTK_EDITABLE(console->endpoint_entry));
+    gchar **tcp_parts = NULL;
+    guint16 tcp_port = 5000;
     if (serial) {
         if (!console->manual_serial_selected && console->selected_serial_path != NULL) {
             endpoint = console->selected_serial_path;
@@ -1395,6 +1517,19 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
         return;
     }
 
+    if (!serial) {
+        tcp_parts = g_strsplit(endpoint, ":", 2);
+        if (tcp_parts[0][0] == '\0' ||
+            (tcp_parts[1] != NULL && !parse_tcp_port(tcp_parts[1], &tcp_port))) {
+            g_strfreev(tcp_parts);
+            set_connection_state(console, "TCP 地址无效", FALSE, TRUE);
+            show_connection_page(console, "TCP 地址无效",
+                                 "请填写主机名和 1 至 65535 的十进制端口。",
+                                 "dialog-warning-symbolic");
+            return;
+        }
+    }
+
     console->connection_pending = TRUE;
     set_connection_state(console, "正在连接", FALSE, FALSE);
     show_connection_page(console, "正在连接设备", "正在建立设备连接。",
@@ -1405,13 +1540,8 @@ static void connect_clicked(GtkButton *button, gpointer user_data)
         JptSerialConfig config = serial_config_from_ui(console);
         jpt_client_connect_serial_async(console->client, endpoint, &config, result_callback, console);
     } else {
-        gchar **parts = g_strsplit(endpoint, ":", 2);
-        guint port = 5000;
-        if (parts[1] != NULL && parts[1][0] != '\0') {
-            port = (guint)g_ascii_strtoull(parts[1], NULL, 10);
-        }
-        jpt_client_connect_tcp_async(console->client, parts[0], (guint16)port, result_callback, console);
-        g_strfreev(parts);
+        jpt_client_connect_tcp_async(console->client, tcp_parts[0], tcp_port, result_callback, console);
+        g_strfreev(tcp_parts);
     }
 }
 
@@ -1496,10 +1626,25 @@ static void raw_read_clicked(GtkButton *button, gpointer user_data)
     if (!raw_request_from_ui(console, FALSE, &payload, &command)) {
         return;
     }
+    gboolean readable = FALSE;
+    for (guint i = 0; i < G_N_ELEMENTS(protocol_commands); i++) {
+        if (protocol_commands[i].command == command && protocol_commands[i].readable) {
+            readable = TRUE;
+            break;
+        }
+    }
+    if (!readable) {
+        gtk_label_set_text(console->raw_result_label,
+                           "该命令不属于只读命令，请使用发送并确认后再执行");
+        g_bytes_unref(payload);
+        return;
+    }
     gtk_label_set_text(console->raw_result_label, "读取中…");
     jpt_client_request_async(console->client, command, payload, raw_result_callback, console);
     g_bytes_unref(payload);
 }
+
+static void confirm_alarm_action(LaserConsole *console, guint16 command, GBytes *payload);
 
 static void raw_send_clicked(GtkButton *button, gpointer user_data)
 {
@@ -1512,6 +1657,11 @@ static void raw_send_clicked(GtkButton *button, gpointer user_data)
     GBytes *payload = NULL;
     guint16 command = 0;
     if (!raw_request_from_ui(console, TRUE, &payload, &command)) {
+        return;
+    }
+    if (command == JPT_CMD_ALARM_CLEAR_COUNT || command == JPT_CMD_LASER_TIME_CLEAR) {
+        confirm_alarm_action(console, command, payload);
+        g_bytes_unref(payload);
         return;
     }
     gtk_label_set_text(console->raw_result_label, "发送中…");
@@ -1688,8 +1838,9 @@ static void network_address_clicked(GtkButton *button, gpointer user_data)
     const gchar *ip_text = gtk_editable_get_text(GTK_EDITABLE(console->device_ip_entry));
     const gchar *port_text = gtk_editable_get_text(GTK_EDITABLE(console->device_port_entry));
     GInetAddress *address = g_inet_address_new_from_string(ip_text);
-    guint64 port = g_ascii_strtoull(port_text, NULL, 10);
-    if (address == NULL || port == 0 || port > G_MAXUINT16 || g_inet_address_get_family(address) != G_SOCKET_FAMILY_IPV4) {
+    guint16 port;
+    if (address == NULL || !parse_tcp_port(port_text, &port) ||
+        g_inet_address_get_family(address) != G_SOCKET_FAMILY_IPV4) {
         g_clear_object(&address);
         gtk_label_set_text(console->raw_result_label, "请输入有效的 IPv4 地址和 TCP 端口");
         return;
@@ -1698,7 +1849,7 @@ static void network_address_clicked(GtkButton *button, gpointer user_data)
     GBytes *ip_payload = g_bytes_new(ip, 4);
     NetworkAddressWrite *write = g_new0(NetworkAddressWrite, 1);
     write->console = console;
-    write->port = (guint16)port;
+    write->port = port;
     gtk_label_set_text(console->raw_result_label, "正在写入 TCP IP 地址");
     jpt_client_request_async(console->client, JPT_CMD_IP_ADDRESS, ip_payload,
                              network_ip_written, write);
@@ -1706,11 +1857,55 @@ static void network_address_clicked(GtkButton *button, gpointer user_data)
     g_object_unref(address);
 }
 
+static void alarm_action_confirmed(GObject *source, GAsyncResult *result, gpointer user_data)
+{
+    AdwAlertDialog *dialog = ADW_ALERT_DIALOG(source);
+    const gchar *response = adw_alert_dialog_choose_finish(dialog, result);
+    if (g_strcmp0(response, "confirm") != 0) {
+        return;
+    }
+    LaserConsole *console = user_data;
+    guint16 command = (guint16)GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(dialog), "command"));
+    GBytes *payload = g_object_get_data(G_OBJECT(dialog), "payload");
+    if (payload != NULL) {
+        gtk_label_set_text(console->raw_result_label, "发送中…");
+        jpt_client_request_async(console->client, command, payload, raw_result_callback, console);
+    } else {
+        send_u16(console, command, 0);
+    }
+}
+
+static void confirm_alarm_action(LaserConsole *console, guint16 command, GBytes *payload)
+{
+    gboolean clear_counts = command == JPT_CMD_ALARM_CLEAR_COUNT;
+    AdwAlertDialog *dialog = ADW_ALERT_DIALOG(adw_alert_dialog_new(
+        clear_counts ? "清除报警次数？" : "清除累计出光时间？",
+        clear_counts
+            ? "设备中记录的报警次数将被清除，且无法恢复。"
+            : "设备中记录的累计出光时间将被清除，且无法恢复。"));
+    adw_alert_dialog_add_response(dialog, "cancel", "取消");
+    adw_alert_dialog_add_response(dialog, "confirm", "清除");
+    adw_alert_dialog_set_response_appearance(dialog, "confirm", ADW_RESPONSE_DESTRUCTIVE);
+    adw_alert_dialog_set_default_response(dialog, "cancel");
+    adw_alert_dialog_set_close_response(dialog, "cancel");
+    g_object_set_data(G_OBJECT(dialog), "command", GUINT_TO_POINTER(command));
+    if (payload != NULL) {
+        g_object_set_data_full(G_OBJECT(dialog), "payload", g_bytes_ref(payload),
+                               (GDestroyNotify)g_bytes_unref);
+    }
+    adw_alert_dialog_choose(dialog, GTK_WIDGET(console->window), NULL,
+                            alarm_action_confirmed, console);
+}
+
 static void alarm_action_clicked(GtkButton *button, gpointer user_data)
 {
     LaserConsole *console = user_data;
-    guint command = GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "command"));
-    send_u16(console, (guint16)command, 0);
+    guint16 command = (guint16)GPOINTER_TO_UINT(g_object_get_data(G_OBJECT(button), "command"));
+    if (command == JPT_CMD_ALARM_CLEAR_COUNT || command == JPT_CMD_LASER_TIME_CLEAR) {
+        confirm_alarm_action(console, command, NULL);
+        return;
+    }
+    send_u16(console, command, 0);
 }
 
 static void send_u16(LaserConsole *console, guint16 command, guint16 value)
@@ -1798,6 +1993,7 @@ static void mode_toggled(GtkCheckButton *button, gpointer user_data)
     }
     guint16 value = button == console->gui_mode ? 0x1F : 0x00;
     console->telemetry.control_mode = value;
+    update_control_source_label(console);
     console->updating_controls = TRUE;
     for (guint i = 0; i < G_N_ELEMENTS(console->control_options); i++) {
         gtk_check_button_set_active(console->control_options[i], (value & (1u << i)) != 0);
@@ -1819,6 +2015,7 @@ static void control_option_toggled(GtkCheckButton *button, gpointer user_data)
     } else {
         console->telemetry.control_mode &= (guint16)~(1u << bit);
     }
+    update_control_source_label(console);
     console->updating_controls = TRUE;
     gtk_check_button_set_active(console->gui_mode, FALSE);
     gtk_check_button_set_active(console->free_mode, TRUE);
@@ -2864,7 +3061,6 @@ GtkWidget *laser_console_create(AdwApplication *application)
                      G_CALLBACK(refresh_serial_clicked), console);
     console->manual_serial_entry = GTK_ENTRY(gtk_entry_new());
     gtk_widget_add_css_class(GTK_WIDGET(console->manual_serial_entry), "card");
-    gtk_editable_set_text(GTK_EDITABLE(console->manual_serial_entry), "/dev/ttyUSB0");
     gtk_entry_set_placeholder_text(console->manual_serial_entry, "/dev/ttyUSB0");
     gtk_widget_set_size_request(GTK_WIDGET(console->manual_serial_entry), 240, -1);
     gtk_widget_set_hexpand(GTK_WIDGET(console->manual_serial_entry), TRUE);
