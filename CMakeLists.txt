@@ -70,6 +70,16 @@ if(BUILD_TESTING)
         $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic>
     )
     add_test(NAME protocol COMMAND ms_lep_protocol_test)
+
+    if(UNIX)
+        add_executable(ms_lep_transport_test tests/transport_test.c)
+        target_link_libraries(ms_lep_transport_test PRIVATE ms_lep_core)
+        target_compile_options(ms_lep_transport_test PRIVATE
+            $<$<C_COMPILER_ID:MSVC>:/W4>
+            $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic>
+        )
+        add_test(NAME transport COMMAND ms_lep_transport_test)
+    endif()
 endif()
 
 if(MS_LEP_BUILD_GUI)

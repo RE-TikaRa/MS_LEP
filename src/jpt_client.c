@@ -122,6 +122,7 @@ static JptExchange *client_exchange(JptClient *client, guint16 command,
         g_set_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_UNEXPECTED_COMMAND,
                     "Expected JPT command 0x%04X but received 0x%04X", command, actual);
         jpt_exchange_free(exchange);
+        jpt_transport_disconnect(&client->transport);
         return NULL;
     }
 
@@ -255,6 +256,11 @@ static gpointer worker_main(gpointer data)
         }
         case JPT_JOB_STOP:
             break;
+        }
+
+        if (result.error != NULL && result.type != JPT_CLIENT_CONNECTION &&
+            result.type != JPT_CLIENT_DISCONNECTED) {
+            result.connection_lost = !jpt_transport_is_connected(&client->transport);
         }
 
         complete_job(client, job, &result);

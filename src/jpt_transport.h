@@ -37,6 +37,7 @@ gboolean jpt_transport_connect_serial(JptTransport *transport, const gchar *path
                                       const JptSerialConfig *config, GError **error);
 gboolean jpt_transport_connect_tcp(JptTransport *transport, const gchar *host, guint16 port, GError **error);
 void jpt_transport_disconnect(JptTransport *transport);
+gboolean jpt_transport_is_connected(const JptTransport *transport);
 JptExchange *jpt_transport_exchange(JptTransport *transport, guint16 command,
                                     const guint8 *payload, gsize payload_length, GError **error);
 void jpt_exchange_free(JptExchange *exchange);

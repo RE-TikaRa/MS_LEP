@@ -275,10 +275,15 @@ void jpt_transport_disconnect(JptTransport *transport)
     }
 }
 
+gboolean jpt_transport_is_connected(const JptTransport *transport)
+{
+    return transport->serial_fd >= 0 || transport->connection != NULL;
+}
+
 JptExchange *jpt_transport_exchange(JptTransport *transport, guint16 command,
                                     const guint8 *payload, gsize payload_length, GError **error)
 {
-    if (transport->serial_fd < 0 && transport->connection == NULL) {
+    if (!jpt_transport_is_connected(transport)) {
         g_set_error(error, G_IO_ERROR, G_IO_ERROR_NOT_CONNECTED, "JPT device is disconnected");
         return NULL;
     }
@@ -292,12 +297,14 @@ JptExchange *jpt_transport_exchange(JptTransport *transport, guint16 command,
     const guint8 *transmit_data = g_bytes_get_data(transmitted, &transmit_length);
     if (!transport_write_all(transport, transmit_data, transmit_length, error)) {
         g_bytes_unref(transmitted);
+        jpt_transport_disconnect(transport);
         return NULL;
     }
 
     guint8 first = 0;
     if (!transport_read_all(transport, &first, 1, error)) {
         g_bytes_unref(transmitted);
+        jpt_transport_disconnect(transport);
         return NULL;
     }
     if (first == JPT_DEVICE_ERROR) {
@@ -312,12 +319,14 @@ JptExchange *jpt_transport_exchange(JptTransport *transport, guint16 command,
         g_bytes_unref(transmitted);
         g_set_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_FRAME,
                     "Unexpected JPT response marker 0x%02X", first);
+        jpt_transport_disconnect(transport);
         return NULL;
     }
 
     guint8 header[3];
     if (!transport_read_all(transport, header, sizeof(header), error)) {
         g_bytes_unref(transmitted);
+        jpt_transport_disconnect(transport);
         return NULL;
     }
     guint response_length = header[2];
@@ -327,6 +336,7 @@ JptExchange *jpt_transport_exchange(JptTransport *transport, guint16 command,
     if (!transport_read_all(transport, received_data + 4, response_length + 1, error)) {
         g_bytes_unref(transmitted);
         g_free(received_data);
+        jpt_transport_disconnect(transport);
         return NULL;
     }
     if (received_data[response_length + 4] != JPT_FRAME_END) {
@@ -334,6 +344,7 @@ JptExchange *jpt_transport_exchange(JptTransport *transport, guint16 command,
         g_free(received_data);
         g_set_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_FRAME,
                     "JPT response did not end with 0x2A");
+        jpt_transport_disconnect(transport);
         return NULL;
     }
 

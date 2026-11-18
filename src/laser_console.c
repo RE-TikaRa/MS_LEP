@@ -1274,10 +1274,44 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     update_output_buttons(console);
 }
 
+static void handle_connection_loss(LaserConsole *console, const gchar *message)
+{
+    if (!console->connected) {
+        return;
+    }
+
+    console->connected = FALSE;
+    console->connection_pending = FALSE;
+    console->poll_pending = FALSE;
+    console->initialized = FALSE;
+    if (console->poll_source != 0) {
+        g_source_remove(console->poll_source);
+        console->poll_source = 0;
+    }
+    gtk_check_button_set_active(console->safety_ack, FALSE);
+    if (console->protocol_ack != NULL) {
+        gtk_check_button_set_active(console->protocol_ack, FALSE);
+    }
+    gtk_button_set_label(console->connect_button, "连接");
+    set_connection_state(console, "通信中断", FALSE, TRUE);
+    set_last_error(console, message);
+    append_log(console, "通信中断，输出状态未知：%s", message);
+    if (!console->shutdown_in_progress) {
+        show_connection_page(console, "通信中断", "设备输出状态尚未确认，请检查设备后重新连接。",
+                             "dialog-warning-symbolic");
+    }
+    update_device_status(console);
+    update_output_buttons(console);
+}
+
 static void result_callback(const JptClientResult *result, gpointer user_data)
 {
     LaserConsole *console = user_data;
     if (console->closing) {
+        return;
+    }
+    if (result->connection_lost) {
+        handle_connection_loss(console, result->error->message);
         return;
     }
     if (result->type == JPT_CLIENT_CONNECTION) {
@@ -2795,6 +2829,9 @@ static void abort_shutdown(LaserConsole *console, const gchar *message)
 static void shutdown_control_mode_callback(const JptClientResult *result, gpointer user_data)
 {
     LaserConsole *console = user_data;
+    if (result->connection_lost) {
+        handle_connection_loss(console, result->error->message);
+    }
     if (result->error != NULL) {
         abort_shutdown(console, result->error->message);
         return;
@@ -2847,6 +2884,11 @@ static void shutdown_write_callback(const JptClientResult *result, gpointer user
                                console->shutdown_command_names[console->shutdown_command_index],
                                result->error->message);
     }
+    if (result->connection_lost) {
+        handle_connection_loss(console, result->error->message);
+        finish_shutdown(console);
+        return;
+    }
     console->shutdown_command_index++;
     shutdown_next(console);
 }
@@ -2855,6 +2897,9 @@ static void shutdown_verify_callback(const JptClientResult *result, gpointer use
 {
     LaserConsole *console = user_data;
     if (result->error != NULL) {
+        if (result->connection_lost) {
+            handle_connection_loss(console, result->error->message);
+        }
         g_string_append_printf(console->shutdown_errors, "读取设备关断状态：%s\n",
                                result->error->message);
         finish_shutdown(console);

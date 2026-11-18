@@ -17,6 +17,7 @@ typedef enum {
 typedef struct {
     JptClientResultType type;
     gboolean connected;
+    gboolean connection_lost;
     JptTelemetry telemetry;
     JptExchange *exchange;
     GError *error;
