@@ -519,12 +519,11 @@ static void serial_picker_row_selected(GtkListBox *list, GtkListBoxRow *row, gpo
 {
     (void)list;
     LaserConsole *console = user_data;
-    GtkWidget *item = row != NULL ? gtk_list_box_row_get_child(row) : NULL;
-    console->serial_picker_selected_port = item != NULL
-        ? g_object_get_data(G_OBJECT(item), "serial-port")
+    console->serial_picker_selected_port = row != NULL
+        ? g_object_get_data(G_OBJECT(row), "serial-port")
         : NULL;
-    console->serial_picker_manual_selected = item != NULL &&
-        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(item), "manual-path"));
+    console->serial_picker_manual_selected = row != NULL &&
+        GPOINTER_TO_INT(g_object_get_data(G_OBJECT(row), "manual-path"));
     if (console->serial_picker_manual_selected) {
         gtk_label_set_text(console->serial_picker_selection_label, "已选中手动输入设备路径");
     } else if (console->serial_picker_selected_port != NULL) {
@@ -627,7 +626,7 @@ static void show_serial_picker(LaserConsole *console)
         g_object_set_data(G_OBJECT(row), "serial-port", port);
         gtk_list_box_append(GTK_LIST_BOX(list), row);
         if (g_strcmp0(port->path, console->selected_serial_path) == 0) {
-            initial_selected_row = GTK_LIST_BOX_ROW(gtk_widget_get_parent(row));
+            initial_selected_row = GTK_LIST_BOX_ROW(row);
         }
     }
     GtkWidget *manual_row = adw_action_row_new();
@@ -636,7 +635,7 @@ static void show_serial_picker(LaserConsole *console)
     g_object_set_data(G_OBJECT(manual_row), "manual-path", GINT_TO_POINTER(TRUE));
     gtk_list_box_append(GTK_LIST_BOX(list), manual_row);
     if (console->manual_serial_selected) {
-        initial_selected_row = GTK_LIST_BOX_ROW(gtk_widget_get_parent(manual_row));
+        initial_selected_row = GTK_LIST_BOX_ROW(manual_row);
     }
     GtkWidget *scroll = gtk_scrolled_window_new();
     gtk_widget_set_vexpand(scroll, TRUE);
@@ -1006,8 +1005,10 @@ static void navigation_row_activated(GtkListBox *list, GtkListBoxRow *row, gpoin
 {
     (void)list;
     LaserConsole *console = user_data;
-    GtkWidget *item = gtk_list_box_row_get_child(row);
-    const gchar *page_name = g_object_get_data(G_OBJECT(item), "page-name");
+    const gchar *page_name = g_object_get_data(G_OBJECT(row), "page-name");
+    if (page_name == NULL) {
+        return;
+    }
     adw_view_stack_set_visible_child_name(console->view_stack, page_name);
     if (adw_overlay_split_view_get_collapsed(console->workbench_split_view)) {
         adw_overlay_split_view_set_show_sidebar(console->workbench_split_view, FALSE);
