@@ -205,6 +205,19 @@ static void test_alarm_cache(void)
     jpt_frame_free(frame);
 }
 
+static void test_power_units(void)
+{
+    guint16 raw = 0;
+    g_assert_true(jpt_device_power_from_percent(0, &raw));
+    g_assert_cmpuint(raw, ==, 0);
+    g_assert_true(jpt_device_power_from_percent(50, &raw));
+    g_assert_cmpuint(raw, ==, 2048);
+    g_assert_cmpfloat(ABS(jpt_device_power_to_percent(raw) - 50.0), <, 0.02);
+    g_assert_true(jpt_device_power_from_percent(100, &raw));
+    g_assert_cmpuint(raw, ==, 4095);
+    g_assert_false(jpt_device_power_from_percent(101, &raw));
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -215,6 +228,7 @@ int main(int argc, char **argv)
     g_test_add_func("/protocol/encode/tcp-address-update", test_encode_tcp_address_update);
     g_test_add_func("/device/status/db25-power", test_decode_status_db25_power);
     g_test_add_func("/device/info/decode", test_device_info);
+    g_test_add_func("/device/power/units", test_power_units);
     g_test_add_func("/device/m7/cutoffs", test_m7_table);
     g_test_add_func("/device/alarm/cache", test_alarm_cache);
     return g_test_run();

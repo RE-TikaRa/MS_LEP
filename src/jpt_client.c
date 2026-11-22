@@ -9,6 +9,7 @@ typedef enum {
     JPT_JOB_SAFE_DISCONNECT,
     JPT_JOB_INITIAL_READ,
     JPT_JOB_POLL,
+    JPT_JOB_SET_ADDRESS,
     JPT_JOB_REQUEST,
     JPT_JOB_STOP
 } JptJobType;
@@ -134,6 +135,46 @@ static JptExchange *client_exchange(JptClient *client, guint16 command,
     return exchange;
 }
 
+static JptExchange *write_confirmed(JptClient *client, guint16 command,
+                                    const guint8 *payload, gsize length, GError **error)
+{
+    JptExchange *reply = client_exchange(client, command, payload, length, error);
+    if (reply != NULL) {
+        gsize actual;
+        const guint8 *echo = g_bytes_get_data(reply->frame->payload, &actual);
+        if (actual != length || memcmp(echo, payload, length) != 0) {
+            g_set_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD,
+                        "Incorrect write acknowledgement for 0x%04X", command);
+            jpt_exchange_free(reply);
+            return NULL;
+        }
+    }
+    return reply;
+}
+
+static JptExchange *set_address(JptClient *client, const gchar *ipv4, guint16 port, GError **error)
+{
+    GInetAddress *address = g_inet_address_new_from_string(ipv4);
+    if (address == NULL || g_inet_address_get_family(address) != G_SOCKET_FAMILY_IPV4 || port == 0) {
+        g_clear_object(&address);
+        g_set_error_literal(error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT,
+                            "Expected an IPv4 address and a nonzero TCP port");
+        return NULL;
+    }
+    JptExchange *reply = write_confirmed(client, JPT_CMD_IP_ADDRESS, g_inet_address_to_bytes(address), 4, error);
+    g_object_unref(address);
+    if (reply == NULL) {
+        return NULL;
+    }
+    jpt_exchange_free(reply);
+    const guint8 bytes[] = {(guint8)port, (guint8)(port >> 8)};
+    reply = write_confirmed(client, JPT_CMD_TCP_PORT, bytes, sizeof(bytes), error);
+    if (reply == NULL) {
+        g_prefix_error(error, "IPv4 address acknowledged, TCP port not confirmed: ");
+    }
+    return reply;
+}
+
 static gboolean client_read_u16(JptClient *client, guint16 command, guint16 *value, GError **error)
 {
     JptExchange *exchange = client_exchange(client, command, (const guint8[]){0, 0}, 2, error);
@@ -242,15 +283,9 @@ static gboolean safe_disconnect(JptClient *client, GError **error)
         }
         mask |= stops[index].status_bit;
         GError *failure = NULL;
-        JptExchange *reply = client_exchange(client, stops[index].command,
+        JptExchange *reply = write_confirmed(client, stops[index].command,
                                              (const guint8[]){0, 0}, 2, &failure);
         if (reply != NULL) {
-            guint16 echo = 0;
-            if (g_bytes_get_size(reply->frame->payload) != 2 ||
-                !jpt_device_decode_u16(reply->frame, &echo, NULL) || echo != 0) {
-                g_set_error(&failure, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD,
-                            "Incorrect shutdown acknowledgement for 0x%04X", stops[index].command);
-            }
             jpt_exchange_free(reply);
         }
         if (failure != NULL) {
@@ -334,6 +369,10 @@ static gpointer worker_main(gpointer data)
                 client->telemetry = result.telemetry;
                 client->settings_dirty = FALSE;
             }
+            break;
+        case JPT_JOB_SET_ADDRESS:
+            result.type = JPT_CLIENT_EXCHANGE;
+            result.exchange = set_address(client, job->address, job->port, &result.error);
             break;
         case JPT_JOB_REQUEST: {
             result.type = JPT_CLIENT_EXCHANGE;
@@ -444,6 +483,15 @@ void jpt_client_read_async(JptClient *client, guint16 command, JptClientCallback
 void jpt_client_read_initial_async(JptClient *client, JptClientCallback callback, gpointer user_data)
 {
     enqueue_job(client, new_job(JPT_JOB_INITIAL_READ, callback, user_data));
+}
+
+void jpt_client_set_address_async(JptClient *client, const gchar *ipv4, guint16 port,
+                                  JptClientCallback callback, gpointer user_data)
+{
+    JptJob *job = new_job(JPT_JOB_SET_ADDRESS, callback, user_data);
+    job->address = g_strdup(ipv4);
+    job->port = port;
+    enqueue_job(client, job);
 }
 
 void jpt_client_poll_async(JptClient *client, JptClientCallback callback, gpointer user_data)

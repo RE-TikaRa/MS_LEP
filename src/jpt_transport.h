@@ -32,6 +32,12 @@ typedef struct {
     gboolean hardware_flow_control;
 } JptSerialConfig;
 
+typedef struct {
+    gchar *name;
+    gchar *path;
+} JptSerialPort;
+
+GPtrArray *jpt_serial_list_ports(const gchar *device_directory);
 void jpt_transport_init(JptTransport *transport);
 gboolean jpt_transport_connect_serial(JptTransport *transport, const gchar *path,
                                       const JptSerialConfig *config, GError **error);

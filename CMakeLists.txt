@@ -21,7 +21,7 @@ target_compile_definitions(ms_lep_core PRIVATE
     GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_56
 )
 if(UNIX)
-    target_sources(ms_lep_core PRIVATE src/jpt_transport.c src/jpt_client.c)
+    target_sources(ms_lep_core PRIVATE src/jpt_transport.c src/jpt_serial_ports.c src/jpt_client.c)
 endif()
 
 if(BUILD_TESTING)
