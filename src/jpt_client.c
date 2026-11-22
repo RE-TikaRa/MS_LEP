@@ -1,5 +1,7 @@
 #include "jpt_client.h"
 
+#include <string.h>
+
 typedef enum {
     JPT_JOB_CONNECT_SERIAL,
     JPT_JOB_CONNECT_TCP,
@@ -42,6 +44,7 @@ struct _JptClient {
     GMainContext *context;
     GThread *worker;
     JptTransport transport;
+    JptTelemetry telemetry;
     JptTraceCallback trace_callback;
     gpointer trace_data;
     gint stopping;
@@ -187,6 +190,9 @@ static gboolean client_read_telemetry(JptClient *client, JptTelemetry *telemetry
     }
     ok = jpt_device_decode_alarm_counts(counts->frame, telemetry, error);
     jpt_exchange_free(counts);
+    if (ok) {
+        jpt_device_decode_status(telemetry->status, telemetry);
+    }
     return ok;
 }
 
@@ -292,11 +298,13 @@ static gpointer worker_main(gpointer data)
         JptClientResult result = {0};
         switch (job->type) {
         case JPT_JOB_CONNECT_SERIAL:
+            memset(&client->telemetry, 0, sizeof(client->telemetry));
             result.type = JPT_CLIENT_CONNECTION;
             result.connected = jpt_transport_connect_serial(&client->transport, job->address,
                                                             &job->serial_config, &result.error);
             break;
         case JPT_JOB_CONNECT_TCP:
+            memset(&client->telemetry, 0, sizeof(client->telemetry));
             result.type = JPT_CLIENT_CONNECTION;
             result.connected = jpt_transport_connect_tcp(&client->transport, job->address, job->port,
                                                          &result.error);
@@ -315,9 +323,10 @@ static gpointer worker_main(gpointer data)
         case JPT_JOB_INITIAL_READ:
         case JPT_JOB_POLL:
             result.type = JPT_CLIENT_TELEMETRY;
-            if (!client_read_telemetry(client, &result.telemetry,
-                                       job->type == JPT_JOB_INITIAL_READ, &result.error)) {
-                result.type = JPT_CLIENT_TELEMETRY;
+            result.telemetry = client->telemetry;
+            if (client_read_telemetry(client, &result.telemetry,
+                                      job->type == JPT_JOB_INITIAL_READ, &result.error)) {
+                client->telemetry = result.telemetry;
             }
             break;
         case JPT_JOB_REQUEST: {

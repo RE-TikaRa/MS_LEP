@@ -118,6 +118,19 @@ typedef struct {
     };
 } JptDeviceInfo;
 
+enum { JPT_M7_CUTOFF_COUNT = 11, JPT_ALARM_SAMPLE_COUNT = 10 };
+
+typedef struct {
+    guint8 type;
+    guint8 category;
+    guint16 power[JPT_ALARM_SAMPLE_COUNT];
+    guint16 frequency[JPT_ALARM_SAMPLE_COUNT];
+    guint16 pulse_width[JPT_ALARM_SAMPLE_COUNT];
+    guint16 extra[2][JPT_ALARM_SAMPLE_COUNT];
+    guint32 powered_minutes;
+    guint32 emission_minutes;
+} JptAlarmRecord;
+
 GBytes *jpt_device_read_request(guint16 command, GError **error);
 GBytes *jpt_device_u16_request(guint16 command, guint16 value, GError **error);
 gboolean jpt_device_decode_u16(const JptFrame *frame, guint16 *value, GError **error);
@@ -125,6 +138,9 @@ gboolean jpt_device_decode_serial(const JptFrame *frame, gchar *serial, gsize se
 gboolean jpt_device_decode_monitoring(const JptFrame *frame, JptTelemetry *telemetry, GError **error);
 gboolean jpt_device_decode_alarm_counts(const JptFrame *frame, JptTelemetry *telemetry, GError **error);
 gboolean jpt_device_decode_info(const JptFrame *frame, JptDeviceInfo *info, GError **error);
+gboolean jpt_device_decode_m7_cutoffs(const JptFrame *frame, guint16 values[JPT_M7_CUTOFF_COUNT], GError **error);
+GBytes *jpt_device_m7_cutoff_payload(const guint16 values[JPT_M7_CUTOFF_COUNT]);
+GArray *jpt_device_decode_alarm_cache(const JptFrame *frame, GError **error);
 void jpt_device_decode_status(guint16 status, JptTelemetry *telemetry);
 
 G_END_DECLS
