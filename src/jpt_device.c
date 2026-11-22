@@ -12,6 +12,20 @@ static guint32 read_minutes(const guint8 *data)
     return read_word(data) | ((guint32)data[2] << 16);
 }
 
+gboolean jpt_device_power_from_percent(guint percent, guint16 *raw)
+{
+    if (percent > 100) {
+        return FALSE;
+    }
+    *raw = (guint16)((percent * 4095 + 50) / 100);
+    return TRUE;
+}
+
+gdouble jpt_device_power_to_percent(guint16 raw)
+{
+    return raw * 100.0 / 4095.0;
+}
+
 GBytes *jpt_device_read_request(guint16 command, GError **error)
 {
     const guint8 zero[] = {0x00, 0x00};
