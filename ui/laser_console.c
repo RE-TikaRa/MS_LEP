@@ -5,25 +5,14 @@
 #include <stdio.h>
 #include <stdarg.h>
 #include <string.h>
-#include <sys/stat.h>
 
 typedef struct _LaserConsole LaserConsole;
-
-typedef struct {
-    gchar *display_name;
-    gchar *path;
-} SerialPort;
 
 typedef struct {
     const gchar *label;
     guint16 command;
     gboolean readable;
 } ProtocolCommand;
-
-typedef struct {
-    LaserConsole *console;
-    guint16 port;
-} NetworkAddressWrite;
 
 static gboolean poll_tick(gpointer user_data);
 static AdwPreferencesGroup *make_group(const gchar *title);
@@ -167,7 +156,7 @@ struct _LaserConsole {
     gchar *selected_serial_path;
     gchar *selected_serial_display_name;
     gboolean manual_serial_selected;
-    SerialPort *serial_picker_selected_port;
+    JptSerialPort *serial_picker_selected_port;
     gboolean serial_picker_manual_selected;
     JptClient *client;
     JptTelemetry telemetry;
@@ -371,116 +360,18 @@ static gboolean parse_command_value(const gchar *text, guint16 *command, GError 
     return TRUE;
 }
 
-static void serial_port_free(gpointer data)
-{
-    SerialPort *port = data;
-    g_free(port->display_name);
-    g_free(port->path);
-    g_free(port);
-}
-
-static gint serial_port_compare(gconstpointer a, gconstpointer b)
-{
-    const SerialPort *left = *(SerialPort *const *)a;
-    const SerialPort *right = *(SerialPort *const *)b;
-    return g_utf8_collate(left->display_name, right->display_name);
-}
-
-static void append_serial_port(LaserConsole *console, GHashTable *seen,
-                               const gchar *path, const gchar *display_name)
-{
-    struct stat info;
-    if (stat(path, &info) != 0 || !S_ISCHR(info.st_mode)) {
-        return;
-    }
-
-    gchar *canonical_path = g_canonicalize_filename(path, NULL);
-    if (g_hash_table_contains(seen, canonical_path)) {
-        g_free(canonical_path);
-        return;
-    }
-    g_hash_table_add(seen, g_strdup(canonical_path));
-
-    SerialPort *port = g_new0(SerialPort, 1);
-    port->display_name = g_strdup(display_name);
-    port->path = canonical_path;
-    g_ptr_array_add(console->serial_ports, port);
-}
-
-static void append_serial_directory(LaserConsole *console, GHashTable *seen,
-                                    const gchar *directory)
-{
-    GError *error = NULL;
-    GDir *entries = g_dir_open(directory, 0, &error);
-    if (entries == NULL) {
-        g_clear_error(&error);
-        return;
-    }
-
-    const gchar *name;
-    while ((name = g_dir_read_name(entries)) != NULL) {
-        gchar *link_path = g_build_filename(directory, name, NULL);
-        gchar *target = g_file_read_link(link_path, NULL);
-        if (target != NULL) {
-            gchar *path = g_canonicalize_filename(target, directory);
-            gchar *display_name = g_strdup_printf("%s (%s)", name, path);
-            append_serial_port(console, seen, path, display_name);
-            g_free(display_name);
-            g_free(path);
-            g_free(target);
-        } else {
-            append_serial_port(console, seen, link_path, name);
-        }
-        g_free(link_path);
-    }
-    g_dir_close(entries);
-}
-
 static void refresh_serial_ports(LaserConsole *console)
 {
-    g_ptr_array_set_size(console->serial_ports, 0);
-    GHashTable *seen = g_hash_table_new_full(g_str_hash, g_str_equal, g_free, NULL);
-    append_serial_directory(console, seen, "/dev/serial/by-id");
-    append_serial_directory(console, seen, "/dev/serial/by-path");
-
-    GError *error = NULL;
-    GDir *devices = g_dir_open("/dev", 0, &error);
-    if (devices != NULL) {
-        const gchar *name;
-        while ((name = g_dir_read_name(devices)) != NULL) {
-            const gchar *type = NULL;
-            if (g_str_has_prefix(name, "ttyUSB")) {
-                type = "USB 串口";
-            } else if (g_str_has_prefix(name, "ttyACM")) {
-                type = "USB ACM 串口";
-            } else if (g_str_has_prefix(name, "ttyS")) {
-                type = "串口";
-            } else if (g_str_has_prefix(name, "rfcomm")) {
-                type = "蓝牙串口";
-            }
-            if (type != NULL) {
-                gchar *path = g_build_filename("/dev", name, NULL);
-                gchar *display_name = g_strdup_printf("%s (%s)", type, path);
-                append_serial_port(console, seen, path, display_name);
-                g_free(display_name);
-                g_free(path);
-            }
-        }
-        g_dir_close(devices);
-    } else {
-        g_clear_error(&error);
-    }
-    g_hash_table_unref(seen);
-
-    g_ptr_array_sort(console->serial_ports, serial_port_compare);
+    g_clear_pointer(&console->serial_ports, g_ptr_array_unref);
+    console->serial_ports = jpt_serial_list_ports("/dev");
     if (console->selected_serial_path != NULL) {
         gboolean found = FALSE;
         for (guint i = 0; i < console->serial_ports->len; i++) {
-            SerialPort *port = g_ptr_array_index(console->serial_ports, i);
+            JptSerialPort *port = g_ptr_array_index(console->serial_ports, i);
             if (g_str_equal(console->selected_serial_path, port->path)) {
                 found = TRUE;
                 g_free(console->selected_serial_display_name);
-                console->selected_serial_display_name = g_strdup(port->display_name);
+                console->selected_serial_display_name = g_strdup_printf("%s (%s)", port->name, port->path);
                 break;
             }
         }
@@ -522,7 +413,7 @@ static void serial_picker_row_selected(GtkListBox *list, GtkListBoxRow *row, gpo
     if (console->serial_picker_manual_selected) {
         gtk_label_set_text(console->serial_picker_selection_label, "已选中手动输入设备路径");
     } else if (console->serial_picker_selected_port != NULL) {
-        gchar *text = g_strdup_printf("已选中：%s", console->serial_picker_selected_port->display_name);
+        gchar *text = g_strdup_printf("已选中：%s", console->serial_picker_selected_port->name);
         gtk_label_set_text(console->serial_picker_selection_label, text);
         g_free(text);
     } else {
@@ -552,11 +443,11 @@ static void serial_picker_use_clicked(GtkButton *button, gpointer user_data)
         console->manual_serial_selected = TRUE;
         gtk_button_set_label(console->serial_port_button, "手动输入设备路径…");
     } else if (console->serial_picker_selected_port != NULL) {
-        SerialPort *port = console->serial_picker_selected_port;
+        JptSerialPort *port = console->serial_picker_selected_port;
         console->manual_serial_selected = FALSE;
         console->selected_serial_path = g_strdup(port->path);
-        console->selected_serial_display_name = g_strdup(port->display_name);
-        gtk_button_set_label(console->serial_port_button, port->display_name);
+        console->selected_serial_display_name = g_strdup_printf("%s (%s)", port->name, port->path);
+        gtk_button_set_label(console->serial_port_button, console->selected_serial_display_name);
     } else {
         return;
     }
@@ -614,9 +505,9 @@ static void show_serial_picker(LaserConsole *console)
     g_signal_connect(list, "row-selected", G_CALLBACK(serial_picker_row_selected), console);
     GtkListBoxRow *initial_selected_row = NULL;
     for (guint i = 0; i < console->serial_ports->len; i++) {
-        SerialPort *port = g_ptr_array_index(console->serial_ports, i);
+        JptSerialPort *port = g_ptr_array_index(console->serial_ports, i);
         GtkWidget *row = adw_action_row_new();
-        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), port->display_name);
+        adw_preferences_row_set_title(ADW_PREFERENCES_ROW(row), port->name);
         adw_action_row_set_subtitle(ADW_ACTION_ROW(row), port->path);
         g_object_set_data(G_OBJECT(row), "serial-port", port);
         gtk_list_box_append(GTK_LIST_BOX(list), row);
@@ -1389,7 +1280,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             adw_spin_row_set_value(console->default_pulse_spin, result->telemetry.default_pulse_width);
             adw_spin_row_set_value(console->default_frequency_spin, result->telemetry.lock_frequency);
             adw_spin_row_set_value(console->lock_power_spin,
-                                   (gdouble)result->telemetry.lock_power * 100.0 / 4095.0);
+                                   jpt_device_power_to_percent(result->telemetry.lock_power));
             adw_spin_row_set_value(console->red_power_spin, result->telemetry.red_light_power);
             adw_spin_row_set_value(console->frequency_spin, result->telemetry.real_frequency);
             adw_spin_row_set_value(console->pulse_spin, result->telemetry.real_pulse_width);
@@ -1700,20 +1591,6 @@ static void network_port_written(const JptClientResult *result, gpointer user_da
                            : result->error->message);
 }
 
-static void network_ip_written(const JptClientResult *result, gpointer user_data)
-{
-    NetworkAddressWrite *write = user_data;
-    LaserConsole *console = write->console;
-    result_callback(result, console);
-    if (result->error == NULL) {
-        jpt_client_write_u16_async(console->client, JPT_CMD_TCP_PORT, write->port,
-                                   network_port_written, console);
-    } else {
-        gtk_label_set_text(console->raw_result_label, result->error->message);
-    }
-    g_free(write);
-}
-
 static void extension_set_status(LaserConsole *console, const gchar *text)
 {
     if (console->extension_status_label != NULL) {
@@ -1836,24 +1713,13 @@ static void network_address_clicked(GtkButton *button, gpointer user_data)
     }
     const gchar *ip_text = gtk_editable_get_text(GTK_EDITABLE(console->device_ip_entry));
     const gchar *port_text = gtk_editable_get_text(GTK_EDITABLE(console->device_port_entry));
-    GInetAddress *address = g_inet_address_new_from_string(ip_text);
     guint16 port;
-    if (address == NULL || !parse_tcp_port(port_text, &port) ||
-        g_inet_address_get_family(address) != G_SOCKET_FAMILY_IPV4) {
-        g_clear_object(&address);
-        gtk_label_set_text(console->raw_result_label, "请输入有效的 IPv4 地址和 TCP 端口");
+    if (!parse_tcp_port(port_text, &port)) {
+        gtk_label_set_text(console->raw_result_label, "请输入有效的 TCP 端口");
         return;
     }
-    const guint8 *ip = g_inet_address_to_bytes(address);
-    GBytes *ip_payload = g_bytes_new(ip, 4);
-    NetworkAddressWrite *write = g_new0(NetworkAddressWrite, 1);
-    write->console = console;
-    write->port = port;
-    gtk_label_set_text(console->raw_result_label, "正在写入 TCP IP 地址");
-    jpt_client_request_async(console->client, JPT_CMD_IP_ADDRESS, ip_payload,
-                             network_ip_written, write);
-    g_bytes_unref(ip_payload);
-    g_object_unref(address);
+    gtk_label_set_text(console->raw_result_label, "正在写入设备地址…");
+    jpt_client_set_address_async(console->client, ip_text, port, network_port_written, console);
 }
 
 static void alarm_action_confirmed(GObject *source, GAsyncResult *result, gpointer user_data)
@@ -1926,11 +1792,12 @@ static gboolean write_spin_value(LaserConsole *console, AdwSpinRow *spin,
         !(console->telemetry.control_mode & (1u << control_bit)))) {
         return FALSE;
     }
-    guint value = (guint)adw_spin_row_get_value(spin);
-    if (command == JPT_CMD_POWER || command == JPT_CMD_LOCK_POWER) {
-        value = (guint)((gdouble)value * 4095.0 / 100.0 + 0.5);
+    guint16 value = (guint16)adw_spin_row_get_value(spin);
+    if ((command == JPT_CMD_POWER || command == JPT_CMD_LOCK_POWER) &&
+        !jpt_device_power_from_percent(value, &value)) {
+        return FALSE;
     }
-    send_u16(console, (guint16)command, (guint16)value);
+    send_u16(console, (guint16)command, value);
     return TRUE;
 }
 
@@ -2954,7 +2821,6 @@ GtkWidget *laser_console_create(AdwApplication *application)
     LaserConsole *console = g_new0(LaserConsole, 1);
     console->client = jpt_client_new(trace_callback, console);
     console->write_buttons = g_ptr_array_new();
-    console->serial_ports = g_ptr_array_new_with_free_func(serial_port_free);
 
     GtkWidget *window = adw_application_window_new(GTK_APPLICATION(application));
     console->window = window;
