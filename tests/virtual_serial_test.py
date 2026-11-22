@@ -86,6 +86,10 @@ class VirtualSerialTests(unittest.TestCase):
             self.assertEqual(receive(port, 3), b"EEE")
             port.write(bytes.fromhex("24 3b 00 02 00 00 2a"))
             self.assertEqual(receive(port, 7), bytes.fromhex("24 3b 00 02 2a 00 2a"))
+            port.write(bytes.fromhex("24 3b 00 ff"))
+            self.assertEqual(receive(port, 1), b"E")
+            port.write(bytes.fromhex("00 00 2a 24 3b 00 02 00 00 2a"))
+            self.assertEqual(receive(port, 7), bytes.fromhex("24 3b 00 02 2a 00 2a"))
 
     def test_core_client(self):
         for scenario in ("normal", "reject-stop", "bad-ack", "stuck-status"):

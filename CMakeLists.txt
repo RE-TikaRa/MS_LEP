@@ -16,7 +16,7 @@ endif()
 add_library(ms_lep_core src/jpt_protocol.c src/jpt_device.c)
 target_include_directories(ms_lep_core PUBLIC src)
 target_link_libraries(ms_lep_core PUBLIC PkgConfig::GLIB)
-target_compile_definitions(ms_lep_core PUBLIC
+target_compile_definitions(ms_lep_core PRIVATE
     GLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_56
     GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_56
 )

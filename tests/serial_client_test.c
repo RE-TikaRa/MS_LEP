@@ -72,6 +72,14 @@ int main(int argc, char **argv)
     g_assert_cmpuint(probe.result.telemetry.lock_frequency, ==, 100);
     g_assert_cmpstr(probe.result.telemetry.serial_number, ==, "AIAJP0248999");
 
+    jpt_client_write_u16_async(client, JPT_CMD_LOCK_FREQUENCY, 314, completed, &probe);
+    wait_for(&probe, JPT_CLIENT_EXCHANGE);
+    g_assert_no_error(probe.error);
+    jpt_client_poll_async(client, completed, &probe);
+    wait_for(&probe, JPT_CLIENT_TELEMETRY);
+    g_assert_no_error(probe.error);
+    g_assert_cmpuint(probe.result.telemetry.lock_frequency, ==, 314);
+
     jpt_client_safe_disconnect_async(client, completed, &probe);
     wait_for(&probe, JPT_CLIENT_DISCONNECTED);
     if (g_str_equal(argv[2], "normal")) {
