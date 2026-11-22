@@ -1,14 +1,14 @@
-cmake_minimum_required(VERSION 3.22)
+cmake_minimum_required(VERSION 3.10)
 
 project(ms_lep VERSION 1.0.0 LANGUAGES C)
 
-set(CMAKE_C_STANDARD 17)
+set(CMAKE_C_STANDARD 11)
 set(CMAKE_C_STANDARD_REQUIRED ON)
 set(CMAKE_C_EXTENSIONS OFF)
 
 include(CTest)
 find_package(PkgConfig REQUIRED)
-pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0 gio-2.0)
+pkg_check_modules(GLIB REQUIRED IMPORTED_TARGET glib-2.0>=2.56 gio-2.0>=2.56)
 
 set(MS_LEP_CORE_SOURCES
     src/jpt_protocol.c
@@ -23,16 +23,22 @@ endif()
 add_library(ms_lep_core ${MS_LEP_CORE_SOURCES})
 target_include_directories(ms_lep_core PUBLIC src)
 target_link_libraries(ms_lep_core PUBLIC PkgConfig::GLIB)
+target_compile_definitions(ms_lep_core PUBLIC
+    GLIB_VERSION_MIN_REQUIRED=GLIB_VERSION_2_56
+    GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_56
+)
 target_compile_options(ms_lep_core PRIVATE
     $<$<C_COMPILER_ID:MSVC>:/W4>
     $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic>
 )
 
-option(MS_LEP_BUILD_GUI "Build the GTK4 application" ON)
+option(MS_LEP_BUILD_GUI "Build the GTK3 application" ON)
 if(MS_LEP_BUILD_GUI)
-    pkg_check_modules(GTK4 REQUIRED IMPORTED_TARGET gtk4)
-    pkg_check_modules(ADW REQUIRED IMPORTED_TARGET libadwaita-1)
-    find_program(GLIB_COMPILE_RESOURCES glib-compile-resources REQUIRED)
+    pkg_check_modules(GTK3 REQUIRED IMPORTED_TARGET gtk+-3.0>=3.22)
+    find_program(GLIB_COMPILE_RESOURCES glib-compile-resources)
+    if(NOT GLIB_COMPILE_RESOURCES)
+        message(FATAL_ERROR "glib-compile-resources is required to build the GUI")
+    endif()
 
     set(MS_LEP_RESOURCE_FILE ${CMAKE_CURRENT_BINARY_DIR}/ms_lep.gresource)
     add_custom_command(
@@ -54,8 +60,11 @@ if(MS_LEP_BUILD_GUI)
         src/laser_console.c
     )
     add_dependencies(ms_lep ms_lep_resources)
-    target_link_libraries(ms_lep PRIVATE ms_lep_core PkgConfig::GTK4 PkgConfig::ADW)
-    target_compile_definitions(ms_lep PRIVATE MS_LEP_VERSION="${PROJECT_VERSION}")
+    target_link_libraries(ms_lep PRIVATE ms_lep_core PkgConfig::GTK3)
+    target_compile_definitions(ms_lep PRIVATE MS_LEP_VERSION="${PROJECT_VERSION}"
+        GDK_VERSION_MIN_REQUIRED=GDK_VERSION_3_22
+        GDK_VERSION_MAX_ALLOWED=GDK_VERSION_3_22
+    )
     target_compile_options(ms_lep PRIVATE
         $<$<C_COMPILER_ID:MSVC>:/W4>
         $<$<NOT:$<C_COMPILER_ID:MSVC>>:-Wall;-Wextra;-Wpedantic>

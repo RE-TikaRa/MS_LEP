@@ -1,6 +1,6 @@
 # MS_LEP
 
-MS_LEP 是面向 JPT YDFLP-E3-100-M7 脉冲光纤激光器的 Linux 调试与控制台。应用使用 GTK4、Libadwaita 和 GLib，提供 USB-RS232 串口与激光器 TCP 服务端两种连接方式。
+MS_LEP 是面向 JPT YDFLP-E3-100-M7 脉冲光纤激光器的 Linux 调试控制台。界面使用 GTK 3.22，串口和 TCP 通信使用独立的 GLib/GIO 客户端。
 
 当前项目范围是 JPT 激光器本体的诊断、参数读写和输出控制。JCZ 控制卡、SG7110 振镜以及未来的上层作业编排属于独立接口，不会被当前串口/TCP 协议层隐式代替。
 
@@ -38,7 +38,7 @@ MS_LEP 是面向 JPT YDFLP-E3-100-M7 脉冲光纤激光器的 Linux 调试与控
 - 保存原始 HEX TX/RX 通信日志，支持清空日志。
 - 协议工具提供设备读写命令、原始 HEX 请求、TCP IP/端口写入和安全维护确认。
 - 型号扩展页提供 M7 截止频率和报警缓存操作。
-- 支持系统浅色/深色主题、Libadwaita 语义色、宽窗口侧边栏和窄窗口覆盖式导航。
+- 界面沿用系统 GTK 主题。宽窗口使用侧边栏，窄窗口从标题栏的导航按钮切换页面。
 
 ## 界面结构
 
@@ -52,9 +52,9 @@ MS_LEP 是面向 JPT YDFLP-E3-100-M7 脉冲光纤激光器的 Linux 调试与控
 - **报警记录**：当前报警、累计次数和状态变化历史。
 - **型号扩展**：M7 截止频率、报警缓存和设备能力相关操作。
 
-启动和未连接状态只显示连接页。设备完成序列号、参数、状态、监控和报警数据读取后，才开放工作台页面。宽窗口使用侧边栏，窗口收窄后切换为 Libadwaita 覆盖式导航；连接页、控制台和监控页在窄窗口切换为纵向布局。
+启动时显示连接页。设备完成序列号、参数、状态、监控和报警数据读取后进入工作台。连接页、控制台和监控页在窄窗口中使用纵向布局。
 
-页面使用 GTK4/Libadwaita 原生控件。状态同时使用文字、语义色和累计数值表达，不依赖颜色单独传达信息。图标按钮提供工具提示和辅助技术名称，异步连接、设备读取、协议命令和安全关闭均有明确的进行中、成功和失败反馈。
+侧栏和窄窗口导航共用同一个 GtkStack。状态区显示连接、命令结果和设备报警；图标按钮提供工具提示和辅助技术名称。
 
 ## 设备连接
 
@@ -119,67 +119,33 @@ DB25 输入按照设备手册映射为八位外部功率值。示例 `0x18` 表�
 
 ## 构建
 
-当前验证环境为 Ubuntu 24.04 WSL。需要 CMake、pkg-config、GTK4、Libadwaita、GLib 和 C17 编译器。
-
-Ubuntu 24.04 可安装构建依赖：
+以 Ubuntu 18.04 为源码构建基线：CMake 3.10、C11 编译器、GTK 3.22 和 GLib/GIO 2.56。桌面环境安装以下开发包：
 
 ```bash
-sudo apt-get update
-sudo apt-get install build-essential cmake pkg-config libgtk-4-dev libadwaita-1-dev fonts-noto-cjk
+sudo apt install build-essential cmake pkg-config libgtk-3-dev
 ```
 
-构建 GUI、运行协议测试并生成 compile commands：
+在仓库根目录执行：
 
 ```bash
-cmake -S . -B build-linux \
-  -DMS_LEP_BUILD_GUI=ON \
-  -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_EXPORT_COMPILE_COMMANDS=ON
-cmake --build build-linux -j2
-ctest --test-dir build-linux --output-on-failure
+mkdir -p build-gtk3
+cd build-gtk3
+cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake --build .
+./ms_lep
 ```
 
-只构建协议核心和测试：
+程序从可执行文件所在目录加载 `ms_lep.gresource`，两者需要放在一起。串口连接使用当前用户可访问的设备节点，TCP 连接不需要串口权限。
+
+协议和传输测试不需要硬件，在同一构建目录执行：
 
 ```bash
-cmake -S . -B build-core -DMS_LEP_BUILD_GUI=OFF
-cmake --build build-core
-ctest --test-dir build-core --output-on-failure
+ctest --output-on-failure
 ```
 
-静态检查 GUI 源文件：
-
-```bash
-clangd --check=src/laser_console.c --compile-commands-dir=build-linux
-```
-
-构建完成后，Linux/WSL 环境可运行：
-
-```bash
-./build-linux/ms_lep
-```
-
-## 验证边界
-
-已完成的自动化检查：
-
-- GTK4/Libadwaita GUI 全量构建。
-- 协议测试通过。
-- `clangd --check=src/laser_console.c --compile-commands-dir=build-linux` 通过。
-- 工作区差异通过 `git diff --check` 检查。
-
-当前环境没有连接 YDFLP-E3-100-M7，因此串口回包、TCP 设备响应、真实出光、JCZ 控制卡和 SG7110 振镜仍需在具备设备和防护条件的现场验证。构建和协议单元测试不能替代硬件联锁、输出状态和关机流程的实机确认。
+只需要协议核心和测试时，可在独立的构建目录中执行 `cmake -DMS_LEP_BUILD_GUI=OFF ..`，不需要 GTK 开发包。
 
 ## 设计参考
 
-界面实现以 GTK4/Libadwaita 的当前原生控件和自适应布局为主，参考以下公开规范和项目：
-
+- [GTK 3 API](https://docs.gtk.org/gtk3/)
 - [GNOME Human Interface Guidelines](https://developer.gnome.org/hig/)
-- [Libadwaita adaptive layouts](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/1-latest/adaptive-layouts.html)
-- [GTK accessibility guidance](https://docs.gtk.org/gtk4/section-accessibility.html)
-- [Libadwaita styles and appearance](https://gnome.pages.gitlab.gnome.org/libadwaita/doc/main/styles-and-appearance.html)
-- [Material Design 3](https://m3.material.io/)
-- [Apple Human Interface Guidelines](https://developer.apple.com/design/human-interface-guidelines/)
-- [Microsoft Fluent 2](https://fluent2.microsoft.design/)
-
-实际采用的设计原则是：连接状态优先、输出操作显式确认、页面按工作任务分组、异步操作显示过程和结果、窄窗口保持可操作、状态信息不依赖颜色单独表达，以及尽量使用框架原生控件保持键盘和辅助技术支持。

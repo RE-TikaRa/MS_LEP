@@ -103,7 +103,8 @@ static void test_decode_status_db25_power(void)
     jpt_device_decode_status(0x18, &telemetry);
     g_assert_true(telemetry.pump_enabled);
     g_assert_cmpuint(telemetry.db25_power, ==, 0x80);
-    g_assert_cmpfloat_with_epsilon((gdouble)telemetry.db25_power * 100.0 / 255.0, 50.196, 0.001);
+    gdouble percent = (gdouble)telemetry.db25_power * 100.0 / 255.0;
+    g_assert_cmpfloat(ABS(percent - 50.196), <=, 0.001);
 }
 
 int main(int argc, char **argv)

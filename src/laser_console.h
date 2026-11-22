@@ -1,5 +1,5 @@
 #pragma once
 
-#include <adwaita.h>
+#include <gtk/gtk.h>
 
-GtkWidget *laser_console_create(AdwApplication *application);
+GtkWidget *laser_console_create(GtkApplication *application);

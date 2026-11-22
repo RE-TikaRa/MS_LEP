@@ -2,10 +2,12 @@
 
 static GResource *application_resources;
 
-static void load_application_styles(void)
+static void startup(GtkApplication *application, gpointer user_data)
 {
+    (void)application;
+    (void)user_data;
     GtkCssProvider *provider = gtk_css_provider_new();
-    gtk_css_provider_load_from_string(provider,
+    gtk_css_provider_load_from_data(provider,
         ".connection-form-row {"
         "  min-height: 58px;"
         "  font-size: 1.10em;"
@@ -17,9 +19,12 @@ static void load_application_styles(void)
         ".connection-side-caption {"
         "  font-size: 1.05em;"
         "}"
-    );
-    gtk_style_context_add_provider_for_display(
-        gdk_display_get_default(), GTK_STYLE_PROVIDER(provider),
+        ".section-title, .title-4 { font-weight: bold; }"
+        ".title-1 { font-size: 1.4em; font-weight: bold; }"
+        ".success { color: @success_color; }",
+        -1, NULL);
+    gtk_style_context_add_provider_for_screen(
+        gdk_screen_get_default(), GTK_STYLE_PROVIDER(provider),
         GTK_STYLE_PROVIDER_PRIORITY_APPLICATION);
     g_object_unref(provider);
 }
@@ -44,22 +49,26 @@ static void register_resources(void)
     g_free(executable_path);
 }
 
-static void activate(AdwApplication *application, gpointer user_data)
+static void activate(GtkApplication *application, gpointer user_data)
 {
     (void)user_data;
-    GtkWidget *window = laser_console_create(application);
-    gtk_window_present(GTK_WINDOW(window));
+    GtkWindow *window = gtk_application_get_active_window(application);
+    if (window == NULL) {
+        window = GTK_WINDOW(laser_console_create(application));
+    }
+    gtk_window_present(window);
 }
 
 int main(int argc, char **argv)
 {
     register_resources();
-    adw_init();
-    load_application_styles();
     g_set_application_name("MS LEP");
-    AdwApplication *application = adw_application_new("io.tikara.mslep", G_APPLICATION_DEFAULT_FLAGS);
+    GtkApplication *application = gtk_application_new("io.tikara.mslep", G_APPLICATION_FLAGS_NONE);
+    g_signal_connect(application, "startup", G_CALLBACK(startup), NULL);
     g_signal_connect(application, "activate", G_CALLBACK(activate), NULL);
     int status = g_application_run(G_APPLICATION(application), argc, argv);
     g_object_unref(application);
+    g_resources_unregister(application_resources);
+    g_resource_unref(application_resources);
     return status;
 }
