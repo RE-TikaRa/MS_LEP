@@ -31,6 +31,7 @@ MS_LEP 是面向 JPT YDFLP-E3-100-M7 脉冲光纤激光器的 Linux 调试与控
 - 连接失败和设备初始化读取失败使用独立弹窗显示详细错误；串口/TCP 切换会收起当前打开的下拉层。
 - 实时功率、频率、脉宽和 Simmer 支持单项写入与批量应用。
 - 默认脉宽、默认 Simmer、锁定频率、锁定功率、红光功率和锁定选项可在设备设置页维护。
+- “设备设置”可单独读取光源优先模式：红光优先、激光优先或红光常开。协议工具可读取固件版本和累计时间。连接时不写入这些设置。
 - 支持 JCZ/DB25 外控与 MS_LEP 内控两种模式。连接后先沿用设备读回的模式，明确切换后才写入控制模式。
 - 支持 GUI PA、GUI MO、红光控制，以及输出许可和安全确认。
 - 监控实时功率、频率、脉宽、传感器温度、种子源 TEC、输出电流、设备序列号、泵浦/PA/MO/红光状态和 DB25 输入。
@@ -119,7 +120,7 @@ DB25 输入按照设备手册映射为八位外部功率值。示例 `0x18` 表�
 
 ## 构建
 
-当前验证环境为 Ubuntu 24.04 WSL。需要 CMake、pkg-config、GTK4、Libadwaita、GLib 和 C17 编译器。
+当前验证环境为 Ubuntu 24.04 WSL。需要 CMake、pkg-config、GTK4、Libadwaita、GLib 和 C11 编译器。
 
 Ubuntu 24.04 可安装构建依赖：
 
@@ -150,7 +151,7 @@ ctest --test-dir build-core --output-on-failure
 静态检查 GUI 源文件：
 
 ```bash
-clangd --check=src/laser_console.c --compile-commands-dir=build-linux
+clangd --check=ui/laser_console.c --compile-commands-dir=build-linux
 ```
 
 构建完成后，Linux/WSL 环境可运行：
@@ -165,7 +166,7 @@ clangd --check=src/laser_console.c --compile-commands-dir=build-linux
 
 - GTK4/Libadwaita GUI 全量构建。
 - 协议测试通过。
-- `clangd --check=src/laser_console.c --compile-commands-dir=build-linux` 通过。
+- `clangd --check=ui/laser_console.c --compile-commands-dir=build-linux` 通过。
 - 工作区差异通过 `git diff --check` 检查。
 
 当前环境没有连接 YDFLP-E3-100-M7，因此串口回包、TCP 设备响应、真实出光、JCZ 控制卡和 SG7110 振镜仍需在具备设备和防护条件的现场验证。构建和协议单元测试不能替代硬件联锁、输出状态和关机流程的实机确认。
