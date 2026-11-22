@@ -107,6 +107,35 @@ static void test_decode_status_db25_power(void)
     g_assert_cmpfloat(ABS(percent - 50.196), <=, 0.001);
 }
 
+static void test_device_info(void)
+{
+    JptDeviceInfo info;
+    GError *error = NULL;
+    const guint8 version[] = {'M', '3', ' ', 0, 0, 0, 0, 0};
+    JptFrame *frame = jpt_frame_new(JPT_CMD_MCU_VERSION, version, sizeof(version));
+    g_assert_true(jpt_device_decode_info(frame, &info, &error));
+    g_assert_no_error(error);
+    g_assert_cmpstr(info.text, ==, "M3");
+    jpt_frame_free(frame);
+
+    const guint8 time[] = {1, 2, 3, 4, 5, 6};
+    frame = jpt_frame_new(JPT_CMD_LASER_TIME, time, sizeof(time));
+    g_assert_true(jpt_device_decode_info(frame, &info, &error));
+    g_assert_cmpuint(info.time.powered_minutes, ==, 0x030201);
+    g_assert_cmpuint(info.time.emission_minutes, ==, 0x060504);
+    jpt_frame_free(frame);
+
+    frame = jpt_frame_new(JPT_CMD_READ_PREFERRED_MODE, (const guint8[]){0x24, 0x2a}, 2);
+    g_assert_true(jpt_device_decode_info(frame, &info, &error));
+    g_assert_cmpuint(info.value, ==, 0x2a24);
+    jpt_frame_free(frame);
+    frame = jpt_frame_new(JPT_CMD_LASER_TIME, time, sizeof(time) - 1);
+    g_assert_false(jpt_device_decode_info(frame, &info, &error));
+    g_assert_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD);
+    g_clear_error(&error);
+    jpt_frame_free(frame);
+}
+
 int main(int argc, char **argv)
 {
     g_test_init(&argc, &argv, NULL);
@@ -116,5 +145,6 @@ int main(int argc, char **argv)
     g_test_add_func("/protocol/encode/oversized-payload", test_encode_rejects_oversized_payload);
     g_test_add_func("/protocol/encode/tcp-address-update", test_encode_tcp_address_update);
     g_test_add_func("/device/status/db25-power", test_decode_status_db25_power);
+    g_test_add_func("/device/info/decode", test_device_info);
     return g_test_run();
 }
