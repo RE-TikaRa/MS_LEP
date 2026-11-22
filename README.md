@@ -11,7 +11,7 @@ Ubuntu 18.04 起可使用系统提供的 C11 编译器、CMake 3.10 和 GLib/GIO
 ```sh
 sudo apt install build-essential cmake pkg-config libglib2.0-dev python3
 mkdir -p build-core && cd build-core
-cmake -DCMAKE_BUILD_TYPE=Release ..
+cmake -DMS_LEP_BUILD_GUI=OFF -DCMAKE_BUILD_TYPE=Release ..
 cmake --build .
 ctest --output-on-failure
 ```

@@ -53,14 +53,10 @@ static void serial_picker_refresh_clicked(GtkButton *button, gpointer user_data)
 static void serial_picker_use_clicked(GtkButton *button, gpointer user_data);
 static void serial_port_button_clicked(GtkButton *button, gpointer user_data);
 static gboolean serial_picker_close_request(GtkWidget *window, GdkEvent *event, gpointer user_data);
-static void shutdown_next(LaserConsole *console);
-static void shutdown_control_mode_callback(const JptClientResult *result, gpointer user_data);
-static void shutdown_write_callback(const JptClientResult *result, gpointer user_data);
-static void shutdown_verify_callback(const JptClientResult *result, gpointer user_data);
 static void shutdown_disconnect_callback(const JptClientResult *result, gpointer user_data);
 static void finish_shutdown(LaserConsole *console);
 static void begin_safe_shutdown(LaserConsole *console, gboolean close_window);
-static void read_shutdown_control_mode(LaserConsole *console);
+static void request_safe_disconnect(LaserConsole *console);
 static void release_console(LaserConsole *console);
 
 struct _LaserConsole {
@@ -86,6 +82,8 @@ struct _LaserConsole {
     GtkWidget *device_indicator;
     GtkWidget *command_indicator;
     GtkLabel *control_source_label;
+    GtkLabel *priority_label;
+    GtkWidget *priority_read_button;
     GtkToggleButton *serial_mode;
     GtkToggleButton *tcp_mode;
     GtkButton *serial_port_button;
@@ -162,11 +160,6 @@ struct _LaserConsole {
     GtkWindow *shutdown_window;
     GtkLabel *shutdown_label;
     GString *shutdown_errors;
-    guint16 shutdown_commands[4];
-    const gchar *shutdown_command_names[4];
-    guint16 shutdown_verify_status_mask;
-    guint shutdown_command_count;
-    guint shutdown_command_index;
     GtkSpinButton *power_spin;
     GtkSpinButton *frequency_spin;
     GtkSpinButton *pulse_spin;
@@ -176,7 +169,7 @@ struct _LaserConsole {
     GtkSpinButton *default_simmer_spin;
     GtkSpinButton *lock_power_spin;
     GtkSpinButton *red_power_spin;
-    GtkSpinButton *m7_cutoff_spins[11];
+    GtkSpinButton *m7_cutoff_spins[JPT_M7_CUTOFF_COUNT];
     GtkProgressBar *power_bar;
     GPtrArray *write_buttons;
     GPtrArray *serial_ports;
@@ -202,7 +195,6 @@ struct _LaserConsole {
     gboolean shutdown_in_progress;
     gboolean shutdown_complete;
     gboolean shutdown_close_window;
-    gboolean shutdown_verify_power;
     guint16 last_alarm_state;
 };
 
@@ -265,6 +257,9 @@ static const ProtocolCommand protocol_commands[] = {
     {"读 · M7 截止频率", JPT_CMD_READ_CUTOFF_FREQUENCY_M7, TRUE},
     {"读 · 出光时间", JPT_CMD_LASER_TIME, TRUE},
     {"读 · 优先模式", JPT_CMD_READ_PREFERRED_MODE, TRUE},
+    {"读 · MCU 版本", JPT_CMD_MCU_VERSION, TRUE},
+    {"读 · FPGA 版本", JPT_CMD_FPGA_VERSION, TRUE},
+    {"读 · 种子扩展板版本", JPT_CMD_SEED_BOARD_VERSION, TRUE},
     {"读 · 报警缓存", JPT_CMD_READ_ALARM_CACHE, TRUE},
     {"读 · 系统参数状态", JPT_CMD_READ_SYSTEM_PARAMETER_STATE, TRUE},
     {"读 · 报警缓存开关", JPT_CMD_READ_ALARM_CACHE_ENABLE, TRUE},
@@ -1020,7 +1015,6 @@ static void set_connection_state(LaserConsole *console, const gchar *text, gbool
     set_status_item(console->connection_indicator, console->connection_label, text, style_class);
 }
 
-
 static void navigation_page_changed(GObject *object, GParamSpec *pspec, gpointer user_data)
 {
     (void)pspec;
@@ -1048,9 +1042,6 @@ static void update_layout(GtkWidget *window, GtkAllocation *allocation, gpointer
     gtk_widget_set_visible(GTK_WIDGET(console->navigation_button), allocation->width < 760 &&
                            console->initialized);
 }
-
-
-
 
 static void show_connection_page(LaserConsole *console, const gchar *title,
                                  const gchar *description, const gchar *icon_name)
@@ -1174,33 +1165,9 @@ static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetr
     }
     console->last_alarm_state = telemetry->alarm_state;
     console->alarm_history_initialized = TRUE;
-    console->telemetry.status = telemetry->status;
-    jpt_device_decode_status(telemetry->status, &console->telemetry);
-    console->telemetry.control_mode = telemetry->control_mode;
+    console->telemetry = *telemetry;
     update_control_source_label(console);
-    if (!console->initialized) {
-        console->telemetry.parameter_select = telemetry->parameter_select;
-        console->telemetry.lock_options = telemetry->lock_options;
-        console->telemetry.default_simmer = telemetry->default_simmer;
-        console->telemetry.default_pulse_width = telemetry->default_pulse_width;
-        console->telemetry.lock_frequency = telemetry->lock_frequency;
-        console->telemetry.lock_power = telemetry->lock_power;
-        console->telemetry.red_light_power = telemetry->red_light_power;
-    }
-    console->telemetry.real_power_percent = telemetry->real_power_percent;
-    console->telemetry.real_pulse_width = telemetry->real_pulse_width;
-    console->telemetry.real_frequency = telemetry->real_frequency;
-    console->telemetry.sensor_1_celsius = telemetry->sensor_1_celsius;
-    console->telemetry.sensor_2_celsius = telemetry->sensor_2_celsius;
-    console->telemetry.sensor_1_fault = telemetry->sensor_1_fault;
-    console->telemetry.sensor_2_fault = telemetry->sensor_2_fault;
-    console->telemetry.seed_tec_celsius = telemetry->seed_tec_celsius;
-    console->telemetry.output_current_amp = telemetry->output_current_amp;
-    console->telemetry.alarm_state = telemetry->alarm_state;
-    memcpy(console->telemetry.alarm_counts, telemetry->alarm_counts, sizeof(telemetry->alarm_counts));
     if (telemetry->serial_number[0] != '\0') {
-        g_strlcpy(console->telemetry.serial_number, telemetry->serial_number,
-                  sizeof(console->telemetry.serial_number));
         gtk_label_set_text(console->serial_status_label, telemetry->serial_number);
     }
     const JptTelemetry *current = &console->telemetry;
@@ -1317,11 +1284,13 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         if (result->connected) {
             console->connected = TRUE;
             console->command_error_active = FALSE;
+            gtk_label_set_text(console->priority_label, "未读取");
+            gtk_widget_set_sensitive(console->priority_read_button, TRUE);
             set_last_error(console, NULL);
             gtk_button_set_label(console->connect_button, "安全断开");
             if (console->shutdown_in_progress) {
                 set_connection_state(console, "正在读取设备模式", FALSE, FALSE);
-                read_shutdown_control_mode(console);
+                request_safe_disconnect(console);
                 update_device_status(console);
                 update_output_buttons(console);
                 return;
@@ -1606,7 +1575,7 @@ static gboolean raw_request_from_ui(LaserConsole *console, gboolean write, GByte
     }
     const gchar *payload_text = gtk_entry_get_text(console->raw_payload_entry);
     if (!write && payload_text[0] == '\0') {
-        *payload = jpt_device_read_request(*command, &error);
+        *payload = g_bytes_new_static("\0\0", 2);
     } else {
         parse_hex_bytes(payload_text, payload, &error);
     }
@@ -1618,6 +1587,8 @@ static gboolean raw_request_from_ui(LaserConsole *console, gboolean write, GByte
     return TRUE;
 }
 
+static gchar *info_label(const JptDeviceInfo *info);
+
 static void raw_result_callback(const JptClientResult *result, gpointer user_data)
 {
     LaserConsole *console = user_data;
@@ -1625,7 +1596,18 @@ static void raw_result_callback(const JptClientResult *result, gpointer user_dat
     if (result->error != NULL) {
         gtk_label_set_text(console->raw_result_label, result->error->message);
     } else if (result->exchange != NULL) {
-        gchar *message = g_strdup_printf("已收到 0x%04X 的响应", result->exchange->frame->command);
+        const JptFrame *frame = result->exchange->frame;
+        GError *error = NULL;
+        JptDeviceInfo info;
+        gchar *message;
+        if (jpt_device_decode_info(frame, &info, &error)) {
+            message = info_label(&info);
+        } else if (g_error_matches(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD)) {
+            message = g_strdup(error->message);
+        } else {
+            message = g_strdup_printf("已收到 0x%04X 的响应", frame->command);
+        }
+        g_clear_error(&error);
         gtk_label_set_text(console->raw_result_label, message);
         g_free(message);
     }
@@ -1732,18 +1714,6 @@ static void extension_set_status(LaserConsole *console, const gchar *text)
     }
 }
 
-static guint16 read_payload_u16(const guint8 *data, gsize offset)
-{
-    return (guint16)data[offset] | ((guint16)data[offset + 1] << 8);
-}
-
-static guint32 read_payload_u24(const guint8 *data, gsize offset)
-{
-    return (guint32)data[offset] |
-        ((guint32)data[offset + 1] << 8) |
-        ((guint32)data[offset + 2] << 16);
-}
-
 static void m7_cutoff_result_callback(const JptClientResult *result, gpointer user_data)
 {
     LaserConsole *console = user_data;
@@ -1752,15 +1722,15 @@ static void m7_cutoff_result_callback(const JptClientResult *result, gpointer us
         extension_set_status(console, result->error ? result->error->message : "设备未返回截止频率");
         return;
     }
-    gsize length = 0;
-    const guint8 *payload = g_bytes_get_data(result->exchange->frame->payload, &length);
-    gsize offset = length >= 24 ? 2 : 0;
-    if (length < offset + 22) {
-        extension_set_status(console, "M7 截止频率响应长度不足");
+    guint16 values[JPT_M7_CUTOFF_COUNT];
+    GError *error = NULL;
+    if (!jpt_device_decode_m7_cutoffs(result->exchange->frame, values, &error)) {
+        extension_set_status(console, error->message);
+        g_clear_error(&error);
         return;
     }
-    for (guint i = 0; i < G_N_ELEMENTS(console->m7_cutoff_spins); i++) {
-        gtk_spin_button_set_value(console->m7_cutoff_spins[i], read_payload_u16(payload, offset + i * 2));
+    for (guint index = 0; index < G_N_ELEMENTS(values); index++) {
+        gtk_spin_button_set_value(console->m7_cutoff_spins[index], values[index]);
     }
     extension_set_status(console, "M7 截止频率已读取");
 }
@@ -1770,10 +1740,8 @@ static void m7_cutoff_read_clicked(GtkButton *button, gpointer user_data)
     (void)button;
     LaserConsole *console = user_data;
     extension_set_status(console, "正在读取 M7 截止频率…");
-    GBytes *request = jpt_device_read_request(JPT_CMD_READ_CUTOFF_FREQUENCY_M7, NULL);
-    jpt_client_request_async(console->client, JPT_CMD_READ_CUTOFF_FREQUENCY_M7,
-                             request, m7_cutoff_result_callback, console);
-    g_bytes_unref(request);
+    jpt_client_read_async(console->client, JPT_CMD_READ_CUTOFF_FREQUENCY_M7,
+                          m7_cutoff_result_callback, console);
 }
 
 static void m7_cutoff_write_result_callback(const JptClientResult *result, gpointer user_data)
@@ -1791,13 +1759,11 @@ static void m7_cutoff_write_clicked(GtkButton *button, gpointer user_data)
         extension_set_status(console, "写入前请确认设备处于安全维护状态");
         return;
     }
-    GByteArray *payload = g_byte_array_new();
-    for (guint i = 0; i < G_N_ELEMENTS(console->m7_cutoff_spins); i++) {
-        guint16 value = (guint16)gtk_spin_button_get_value(console->m7_cutoff_spins[i]);
-        guint8 bytes[] = {(guint8)(value & 0xff), (guint8)(value >> 8)};
-        g_byte_array_append(payload, bytes, sizeof(bytes));
+    guint16 values[JPT_M7_CUTOFF_COUNT];
+    for (guint index = 0; index < G_N_ELEMENTS(values); index++) {
+        values[index] = (guint16)gtk_spin_button_get_value(console->m7_cutoff_spins[index]);
     }
-    GBytes *request = g_byte_array_free_to_bytes(payload);
+    GBytes *request = jpt_device_m7_cutoff_payload(values);
     extension_set_status(console, "正在写入 M7 截止频率…");
     jpt_client_request_async(console->client, JPT_CMD_CUTOFF_FREQUENCY_M7,
                              request, m7_cutoff_write_result_callback, console);
@@ -1812,40 +1778,36 @@ static void alarm_cache_result_callback(const JptClientResult *result, gpointer 
         extension_set_status(console, result->error ? result->error->message : "设备未返回报警缓存");
         return;
     }
-    gsize length = 0;
-    const guint8 *payload = g_bytes_get_data(result->exchange->frame->payload, &length);
-    if (length < 6) {
-        extension_set_status(console, "报警缓存响应长度不足");
-        return;
-    }
-    guint count = payload[5];
-    if (count == 0) {
-        gtk_text_buffer_set_text(console->alarm_cache_buffer, "设备没有报警缓存记录。", -1);
-        extension_set_status(console, "报警缓存为空");
-        return;
-    }
-    if (length < 6 + (gsize)count * 108) {
-        extension_set_status(console, "报警缓存响应不完整");
+    GError *error = NULL;
+    GArray *records = jpt_device_decode_alarm_cache(result->exchange->frame, &error);
+    if (records == NULL) {
+        extension_set_status(console, error->message);
+        g_clear_error(&error);
         return;
     }
     GString *text = g_string_new(NULL);
-    for (guint i = 0; i < count; i++) {
-        const guint8 *record = payload + 6 + i * 108;
-        guint32 total_time = read_payload_u24(record, 102);
-        guint32 open_time = read_payload_u24(record, 105);
+    for (guint index = 0; index < records->len; index++) {
+        const JptAlarmRecord *record = &g_array_index(records, JptAlarmRecord, index);
         g_string_append_printf(text,
-                               "记录 %u · 类型 %u · 分类 %u · 累计功率时间 %u min · 出光时间 %u min\n",
-                               i + 1, record[0], record[1], total_time, open_time);
-        g_string_append_printf(text, "  功率: %u %u %u %u %u %u %u %u %u %u\n",
-                               read_payload_u16(record, 2), read_payload_u16(record, 4),
-                               read_payload_u16(record, 6), read_payload_u16(record, 8),
-                               read_payload_u16(record, 10), read_payload_u16(record, 12),
-                               read_payload_u16(record, 14), read_payload_u16(record, 16),
-                               read_payload_u16(record, 18), read_payload_u16(record, 20));
+                               "记录 %u · 类型 %u · 分类 %u · 上电时间 %u min · 出光时间 %u min\n",
+                               index + 1, record->type, record->category,
+                               record->powered_minutes, record->emission_minutes);
+        const gchar *labels[] = {"功率", "频率", "脉宽", "附加量 1", "附加量 2"};
+        const guint16 *series[] = {record->power, record->frequency, record->pulse_width,
+                                   record->extra[0], record->extra[1]};
+        for (guint channel = 0; channel < G_N_ELEMENTS(series); channel++) {
+            g_string_append_printf(text, "  %s:", labels[channel]);
+            for (guint sample = 0; sample < JPT_ALARM_SAMPLE_COUNT; sample++) {
+                g_string_append_printf(text, " %u", series[channel][sample]);
+            }
+            g_string_append_c(text, '\n');
+        }
     }
-    gtk_text_buffer_set_text(console->alarm_cache_buffer, text->str, -1);
+    gtk_text_buffer_set_text(console->alarm_cache_buffer,
+                             records->len ? text->str : "设备没有报警缓存记录。", -1);
+    extension_set_status(console, records->len ? "报警缓存已读取" : "报警缓存为空");
+    g_array_unref(records);
     g_string_free(text, TRUE);
-    extension_set_status(console, "报警缓存已读取");
 }
 
 static void alarm_cache_refresh_clicked(GtkButton *button, gpointer user_data)
@@ -1853,10 +1815,8 @@ static void alarm_cache_refresh_clicked(GtkButton *button, gpointer user_data)
     (void)button;
     LaserConsole *console = user_data;
     extension_set_status(console, "正在读取报警缓存…");
-    GBytes *request = jpt_device_read_request(JPT_CMD_READ_ALARM_CACHE, NULL);
-    jpt_client_request_async(console->client, JPT_CMD_READ_ALARM_CACHE,
-                             request, alarm_cache_result_callback, console);
-    g_bytes_unref(request);
+    jpt_client_read_async(console->client, JPT_CMD_READ_ALARM_CACHE,
+                          alarm_cache_result_callback, console);
 }
 
 static void network_address_clicked(GtkButton *button, gpointer user_data)
@@ -2111,7 +2071,6 @@ static GtkBox *make_group(const gchar *title)
     return group;
 }
 
-
 static GtkBox *make_property_row(const gchar *title, GtkLabel **value)
 {
     *value = GTK_LABEL(gtk_label_new("--"));
@@ -2260,6 +2219,58 @@ static GtkWidget *build_control_page(LaserConsole *console)
     return scroll;
 }
 
+static gchar *info_label(const JptDeviceInfo *info)
+{
+    switch (info->command) {
+    case JPT_CMD_READ_PREFERRED_MODE: {
+        const gchar *modes[] = {[JPT_PRIORITY_RED] = "红光优先", [JPT_PRIORITY_LASER] = "激光优先",
+                                [JPT_PRIORITY_RED_IDLE] = "红光常开"};
+        return info->value < G_N_ELEMENTS(modes) ? g_strdup(modes[info->value])
+                                                 : g_strdup_printf("未知模式（0x%04X）", info->value);
+    }
+    case JPT_CMD_LASER_TIME:
+        return g_strdup_printf("上电 %u min，出光 %u min", info->time.powered_minutes,
+                               info->time.emission_minutes);
+    case JPT_CMD_READ_EXTENDED_ALARM_COUNT:
+        return g_strdup_printf("%u 次", info->value);
+    case JPT_CMD_KEY_STATE:
+    case JPT_CMD_INTERLOCK_STATE:
+        return g_strdup_printf("0x%04X", info->value);
+    default:
+        return g_strdup(info->text);
+    }
+}
+
+static void priority_read_complete(const JptClientResult *result, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    if (console->closing) {
+        return;
+    }
+    result_callback(result, console);
+    gtk_widget_set_sensitive(console->priority_read_button, TRUE);
+    GError *error = NULL;
+    JptDeviceInfo info;
+    if (result->error != NULL) {
+        gtk_label_set_text(console->priority_label, result->error->message);
+    } else if (result->exchange && jpt_device_decode_info(result->exchange->frame, &info, &error)) {
+        gchar *text = info_label(&info);
+        gtk_label_set_text(console->priority_label, text);
+        g_free(text);
+    } else {
+        gtk_label_set_text(console->priority_label, error ? error->message : "未收到设备读回值");
+        g_clear_error(&error);
+    }
+}
+
+static void priority_read_clicked(GtkButton *button, gpointer user_data)
+{
+    LaserConsole *console = user_data;
+    gtk_widget_set_sensitive(GTK_WIDGET(button), FALSE);
+    gtk_label_set_text(console->priority_label, "读取中…");
+    jpt_client_read_async(console->client, JPT_CMD_READ_PREFERRED_MODE, priority_read_complete, console);
+}
+
 static GtkWidget *build_settings_page(LaserConsole *console)
 {
     GtkWidget *scroll = gtk_scrolled_window_new(NULL, NULL);
@@ -2268,6 +2279,12 @@ static GtkWidget *build_settings_page(LaserConsole *console)
     console->settings_page = scroll;
 
     GtkBox *control_group = make_group("控制来源");
+    GtkBox *priority = make_property_row("光源优先模式", &console->priority_label);
+    console->priority_read_button = gtk_button_new_from_icon_name("view-refresh-symbolic", GTK_ICON_SIZE_BUTTON);
+    gtk_box_pack_start(priority, console->priority_read_button, FALSE, FALSE, 0);
+    gtk_box_pack_start(control_group, GTK_WIDGET(priority), FALSE, TRUE, 0);
+    gtk_widget_set_tooltip_text(console->priority_read_button, "读取光源优先模式");
+    g_signal_connect(console->priority_read_button, "clicked", G_CALLBACK(priority_read_clicked), console);
     const gchar *control_names[] = {"GUI MO", "GUI PA", "GUI 脉宽", "GUI 频率", "GUI 功率"};
     for (guint i = 0; i < G_N_ELEMENTS(control_names); i++) {
         console->control_options[i] = add_control_option(GTK_WIDGET(control_group), control_names[i], i, console);
@@ -2721,7 +2738,10 @@ static void shutdown_disconnect_callback(const JptClientResult *result, gpointer
 {
     LaserConsole *console = user_data;
     if (result->error != NULL) {
-        g_string_append_printf(console->shutdown_errors, "断开设备连接：%s\n",
+        if (result->connection_lost) {
+            handle_connection_loss(console, result->error->message);
+        }
+        g_string_append_printf(console->shutdown_errors, "安全断开：%s\n",
                                result->error->message);
     } else {
         console->connected = FALSE;
@@ -2732,127 +2752,8 @@ static void shutdown_disconnect_callback(const JptClientResult *result, gpointer
 
 static void abort_shutdown(LaserConsole *console, const gchar *message)
 {
-    g_string_append_printf(console->shutdown_errors, "读取控制模式：%s\n", message);
+    g_string_append_printf(console->shutdown_errors, "%s\n", message);
     finish_shutdown(console);
-}
-
-static void shutdown_control_mode_callback(const JptClientResult *result, gpointer user_data)
-{
-    LaserConsole *console = user_data;
-    if (result->connection_lost) {
-        handle_connection_loss(console, result->error->message);
-    }
-    if (result->error != NULL) {
-        abort_shutdown(console, result->error->message);
-        return;
-    }
-    if (result->exchange == NULL || result->exchange->frame == NULL) {
-        abort_shutdown(console, "设备没有返回控制模式，无法确认软件控制的输出。");
-        return;
-    }
-
-    guint16 control_mode = 0;
-    GError *error = NULL;
-    if (!jpt_frame_read_u16(result->exchange->frame, 0, &control_mode, &error)) {
-        abort_shutdown(console, error->message);
-        g_clear_error(&error);
-        return;
-    }
-
-    console->shutdown_command_index = 0;
-    console->shutdown_command_count = 0;
-    console->shutdown_verify_status_mask = 1u << 2;
-    console->shutdown_verify_power = (control_mode & (1u << 4)) != 0;
-    if (control_mode & (1u << 1)) {
-        guint index = console->shutdown_command_count++;
-        console->shutdown_commands[index] = JPT_CMD_GUI_PA;
-        console->shutdown_command_names[index] = "PA=0";
-        console->shutdown_verify_status_mask |= 1u << 0;
-    }
-    if (control_mode & (1u << 0)) {
-        guint index = console->shutdown_command_count++;
-        console->shutdown_commands[index] = JPT_CMD_GUI_MO;
-        console->shutdown_command_names[index] = "MO=0";
-        console->shutdown_verify_status_mask |= 1u << 1;
-    }
-    guint red_index = console->shutdown_command_count++;
-    console->shutdown_commands[red_index] = JPT_CMD_RED_LIGHT;
-    console->shutdown_command_names[red_index] = "红光关闭";
-    if (control_mode & (1u << 4)) {
-        guint index = console->shutdown_command_count++;
-        console->shutdown_commands[index] = JPT_CMD_POWER;
-        console->shutdown_command_names[index] = "功率设为 0%";
-    }
-    shutdown_next(console);
-}
-
-static void shutdown_write_callback(const JptClientResult *result, gpointer user_data)
-{
-    LaserConsole *console = user_data;
-    if (result->error != NULL) {
-        g_string_append_printf(console->shutdown_errors, "%s：%s\n",
-                               console->shutdown_command_names[console->shutdown_command_index],
-                               result->error->message);
-    }
-    if (result->connection_lost) {
-        handle_connection_loss(console, result->error->message);
-        finish_shutdown(console);
-        return;
-    }
-    console->shutdown_command_index++;
-    shutdown_next(console);
-}
-
-static void shutdown_verify_callback(const JptClientResult *result, gpointer user_data)
-{
-    LaserConsole *console = user_data;
-    if (result->error != NULL) {
-        if (result->connection_lost) {
-            handle_connection_loss(console, result->error->message);
-        }
-        g_string_append_printf(console->shutdown_errors, "读取设备关断状态：%s\n",
-                               result->error->message);
-        finish_shutdown(console);
-        return;
-    }
-
-    GString *write_errors = g_string_new(console->shutdown_errors->str);
-    g_string_set_size(console->shutdown_errors, 0);
-    if ((result->telemetry.status & console->shutdown_verify_status_mask) != 0) {
-        g_string_append(console->shutdown_errors, "PA、MO 或红光状态仍处于开启\n");
-    }
-    if (console->shutdown_verify_power && result->telemetry.real_power_percent != 0) {
-        g_string_append_printf(console->shutdown_errors, "软件控制功率仍为 %u%%\n",
-                               result->telemetry.real_power_percent);
-    }
-    if (console->shutdown_errors->len != 0) {
-        if (write_errors->len != 0) {
-            g_string_prepend(console->shutdown_errors, write_errors->str);
-        }
-        g_string_free(write_errors, TRUE);
-        finish_shutdown(console);
-        return;
-    }
-    g_string_free(write_errors, TRUE);
-
-    gtk_label_set_text(console->shutdown_label, "输出已确认关闭，正在断开设备连接…");
-    jpt_client_disconnect_async(console->client, shutdown_disconnect_callback, console);
-}
-
-static void shutdown_next(LaserConsole *console)
-{
-    if (console->shutdown_command_index < console->shutdown_command_count) {
-        guint index = console->shutdown_command_index;
-        gchar *text = g_strdup_printf("正在关闭%s…", console->shutdown_command_names[index]);
-        gtk_label_set_text(console->shutdown_label, text);
-        g_free(text);
-        jpt_client_write_u16_async(console->client, console->shutdown_commands[index], 0,
-                                   shutdown_write_callback, console);
-        return;
-    }
-
-    gtk_label_set_text(console->shutdown_label, "正在确认输出状态…");
-    jpt_client_poll_async(console->client, shutdown_verify_callback, console);
 }
 
 static void present_shutdown_dialog(LaserConsole *console)
@@ -2884,19 +2785,10 @@ static void present_shutdown_dialog(LaserConsole *console)
     gtk_window_present(dialog);
 }
 
-static void read_shutdown_control_mode(LaserConsole *console)
+static void request_safe_disconnect(LaserConsole *console)
 {
-    gtk_label_set_text(console->shutdown_label, "正在读取设备控制模式…");
-    GError *error = NULL;
-    GBytes *request = jpt_device_read_request(JPT_CMD_READ_CONTROL_MODE, &error);
-    if (request == NULL) {
-        abort_shutdown(console, error != NULL ? error->message : "无法构造控制模式读取请求。");
-        g_clear_error(&error);
-        return;
-    }
-    jpt_client_request_async(console->client, JPT_CMD_READ_CONTROL_MODE, request,
-                             shutdown_control_mode_callback, console);
-    g_bytes_unref(request);
+    gtk_label_set_text(console->shutdown_label, "正在关闭并核对软件控制的输出…");
+    jpt_client_safe_disconnect_async(console->client, shutdown_disconnect_callback, console);
 }
 
 static void begin_safe_shutdown(LaserConsole *console, gboolean close_window)
@@ -2923,7 +2815,7 @@ static void begin_safe_shutdown(LaserConsole *console, gboolean close_window)
         return;
     }
 
-    read_shutdown_control_mode(console);
+    request_safe_disconnect(console);
 }
 
 static void release_console(LaserConsole *console)
