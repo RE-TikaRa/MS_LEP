@@ -2,6 +2,16 @@
 
 #include <string.h>
 
+static guint16 read_word(const guint8 *data)
+{
+    return data[0] | ((guint16)data[1] << 8);
+}
+
+static guint32 read_minutes(const guint8 *data)
+{
+    return read_word(data) | ((guint32)data[2] << 16);
+}
+
 GBytes *jpt_device_read_request(guint16 command, GError **error)
 {
     const guint8 zero[] = {0x00, 0x00};
@@ -87,4 +97,120 @@ void jpt_device_decode_status(guint16 status, JptTelemetry *telemetry)
             telemetry->db25_power |= (guint8)(1u << (7 - bit));
         }
     }
+}
+
+gboolean jpt_device_decode_info(const JptFrame *frame, JptDeviceInfo *info, GError **error)
+{
+    gsize length = 0;
+    const guint8 *data = g_bytes_get_data(frame->payload, &length);
+    JptDeviceInfo decoded = {.command = frame->command};
+    switch (frame->command) {
+    case JPT_CMD_MCU_VERSION:
+    case JPT_CMD_FPGA_VERSION:
+    case JPT_CMD_SEED_BOARD_VERSION:
+    case JPT_CMD_READ_MACHINE_TYPE:
+    case JPT_CMD_SERIAL_NUMBER: {
+        gsize limit = frame->command == JPT_CMD_SERIAL_NUMBER ? 255 :
+                      frame->command == JPT_CMD_READ_MACHINE_TYPE ? 30 : 8;
+        if (length > limit) {
+            break;
+        }
+        while (length && (data[length - 1] == 0 || g_ascii_isspace(data[length - 1]))) {
+            length--;
+        }
+        if (!length || !g_utf8_validate((const gchar *)data, length, NULL)) {
+            break;
+        }
+        for (gsize index = 0; index < length; index++) {
+            if (data[index] < 0x20 || data[index] == 0x7f) {
+                goto invalid;
+            }
+        }
+        memcpy(decoded.text, data, length);
+        *info = decoded;
+        return TRUE;
+    }
+    case JPT_CMD_LASER_TIME:
+        if (length != 6) {
+            break;
+        }
+        decoded.time.powered_minutes = read_minutes(data);
+        decoded.time.emission_minutes = read_minutes(data + 3);
+        *info = decoded;
+        return TRUE;
+    case JPT_CMD_READ_PREFERRED_MODE:
+    case JPT_CMD_READ_EXTENDED_ALARM_COUNT:
+    case JPT_CMD_KEY_STATE:
+    case JPT_CMD_INTERLOCK_STATE:
+        if (length != 2) {
+            break;
+        }
+        decoded.value = read_word(data);
+        *info = decoded;
+        return TRUE;
+    default:
+        g_set_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_UNEXPECTED_COMMAND,
+                    "Not an information reply: 0x%04X", frame->command);
+        return FALSE;
+    }
+invalid:
+    g_set_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD,
+                "Invalid information payload for 0x%04X (%zu bytes)",
+                frame->command, g_bytes_get_size(frame->payload));
+    return FALSE;
+}
+
+gboolean jpt_device_decode_m7_cutoffs(const JptFrame *frame, guint16 values[JPT_M7_CUTOFF_COUNT],
+                                      GError **error)
+{
+    gsize length;
+    const guint8 *data = g_bytes_get_data(frame->payload, &length);
+    if (frame->command != JPT_CMD_READ_CUTOFF_FREQUENCY_M7 ||
+        (length != 2 * JPT_M7_CUTOFF_COUNT && length != 2 + 2 * JPT_M7_CUTOFF_COUNT)) {
+        g_set_error_literal(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD,
+                            "Invalid M7 cutoff table");
+        return FALSE;
+    }
+    data += length - 2 * JPT_M7_CUTOFF_COUNT;
+    for (guint index = 0; index < JPT_M7_CUTOFF_COUNT; index++) {
+        values[index] = read_word(data + 2 * index);
+    }
+    return TRUE;
+}
+
+GBytes *jpt_device_m7_cutoff_payload(const guint16 values[JPT_M7_CUTOFF_COUNT])
+{
+    guint8 payload[2 * JPT_M7_CUTOFF_COUNT];
+    for (guint index = 0; index < JPT_M7_CUTOFF_COUNT; index++) {
+        payload[2 * index] = (guint8)values[index];
+        payload[2 * index + 1] = (guint8)(values[index] >> 8);
+    }
+    return g_bytes_new(payload, sizeof(payload));
+}
+
+GArray *jpt_device_decode_alarm_cache(const JptFrame *frame, GError **error)
+{
+    gsize length;
+    const guint8 *data = g_bytes_get_data(frame->payload, &length);
+    if (frame->command != JPT_CMD_READ_ALARM_CACHE || length < 6 || length != 6u + data[5] * 108u) {
+        g_set_error_literal(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD,
+                            "Invalid alarm cache record count or payload length");
+        return NULL;
+    }
+    guint count = data[5];
+    GArray *records = g_array_sized_new(FALSE, FALSE, sizeof(JptAlarmRecord), count);
+    for (guint index = 0; index < count; index++) {
+        const guint8 *record = data + 6 + index * 108;
+        JptAlarmRecord item = {.type = record[0], .category = record[1],
+                               .powered_minutes = read_minutes(record + 102),
+                               .emission_minutes = read_minutes(record + 105)};
+        guint16 *series[] = {item.power, item.frequency, item.pulse_width, item.extra[0], item.extra[1]};
+        for (guint channel = 0; channel < G_N_ELEMENTS(series); channel++) {
+            for (guint sample = 0; sample < JPT_ALARM_SAMPLE_COUNT; sample++) {
+                series[channel][sample] = read_word(record + 2 + 2 * (channel * JPT_ALARM_SAMPLE_COUNT + sample));
+            }
+        }
+        g_array_append_val(records, item);
+    }
+    return records;
 }

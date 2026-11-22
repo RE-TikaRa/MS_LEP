@@ -34,6 +34,8 @@ void jpt_client_connect_serial_async(JptClient *client, const gchar *path,
 void jpt_client_connect_tcp_async(JptClient *client, const gchar *host, guint16 port,
                                   JptClientCallback callback, gpointer user_data);
 void jpt_client_disconnect_async(JptClient *client, JptClientCallback callback, gpointer user_data);
+void jpt_client_safe_disconnect_async(JptClient *client, JptClientCallback callback, gpointer user_data);
+void jpt_client_read_async(JptClient *client, guint16 command, JptClientCallback callback, gpointer user_data);
 void jpt_client_read_initial_async(JptClient *client, JptClientCallback callback, gpointer user_data);
 void jpt_client_poll_async(JptClient *client, JptClientCallback callback, gpointer user_data);
 void jpt_client_request_async(JptClient *client, guint16 command, GBytes *payload,
