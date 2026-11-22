@@ -51,6 +51,8 @@ int main(int argc, char **argv)
     g_assert_no_error(probe.error);
     g_assert_cmpstr(probe.result.telemetry.serial_number, ==, "AIAJP0248999");
     g_assert_cmpuint(probe.result.telemetry.control_mode, ==, 0x1c);
+    g_assert_true(probe.result.telemetry.pump_enabled);
+    g_assert_cmpuint(probe.result.telemetry.db25_power, ==, 0x80);
     g_assert_true(probe.result.telemetry.sensor_2_fault);
     g_assert_cmpfloat(ABS(probe.result.telemetry.sensor_1_celsius - 25.1), <, 0.001);
     g_assert_cmpuint(probe.result.telemetry.alarm_counts[4], ==, 1);
@@ -67,6 +69,8 @@ int main(int argc, char **argv)
     wait_for(&probe, JPT_CLIENT_TELEMETRY);
     g_assert_no_error(probe.error);
     g_assert_cmpuint(probe.result.telemetry.real_frequency, ==, 137);
+    g_assert_cmpuint(probe.result.telemetry.lock_frequency, ==, 100);
+    g_assert_cmpstr(probe.result.telemetry.serial_number, ==, "AIAJP0248999");
 
     jpt_client_safe_disconnect_async(client, completed, &probe);
     wait_for(&probe, JPT_CLIENT_DISCONNECTED);
