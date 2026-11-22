@@ -33,6 +33,18 @@ if(BUILD_TESTING)
         add_executable(ms_lep_transport_test tests/transport_test.c)
         target_link_libraries(ms_lep_transport_test PRIVATE ms_lep_core)
         add_test(NAME transport COMMAND ms_lep_transport_test)
+        if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
+            find_program(MS_LEP_PYTHON python3)
+            if(NOT MS_LEP_PYTHON)
+                message(FATAL_ERROR "Linux serial integration tests require Python 3.6 or newer")
+            endif()
+            add_executable(ms_lep_serial_client_test tests/serial_client_test.c)
+            target_link_libraries(ms_lep_serial_client_test PRIVATE ms_lep_core)
+            add_test(NAME virtual_serial COMMAND "${MS_LEP_PYTHON}"
+                "${CMAKE_CURRENT_SOURCE_DIR}/tests/virtual_serial_test.py"
+                $<TARGET_FILE:ms_lep_serial_client_test> -v)
+            set_tests_properties(virtual_serial PROPERTIES TIMEOUT 90)
+        endif()
     endif()
 endif()
 

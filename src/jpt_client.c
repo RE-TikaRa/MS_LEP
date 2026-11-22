@@ -4,6 +4,7 @@ typedef enum {
     JPT_JOB_CONNECT_SERIAL,
     JPT_JOB_CONNECT_TCP,
     JPT_JOB_DISCONNECT,
+    JPT_JOB_SAFE_DISCONNECT,
     JPT_JOB_INITIAL_READ,
     JPT_JOB_POLL,
     JPT_JOB_REQUEST,
@@ -206,6 +207,71 @@ static void complete_job(JptClient *client, const JptJob *job, JptClientResult *
                                dispatch_completion, completion, free_completion);
 }
 
+static gboolean safe_disconnect(JptClient *client, GError **error)
+{
+    guint16 mode;
+    if (!client_read_u16(client, JPT_CMD_READ_CONTROL_MODE, &mode, error)) {
+        return FALSE;
+    }
+    const struct {
+        guint16 command;
+        guint16 source_bit;
+        guint16 status_bit;
+    } stops[] = {
+        {JPT_CMD_GUI_PA, 1u << 1, 1u << 0},
+        {JPT_CMD_GUI_MO, 1u << 0, 1u << 1},
+        {JPT_CMD_RED_LIGHT, 0, 1u << 2},
+        {JPT_CMD_POWER, 1u << 4, 0},
+    };
+    guint16 mask = 0;
+    GError *write_error = NULL;
+    for (guint index = 0; index < G_N_ELEMENTS(stops); index++) {
+        if (stops[index].source_bit && !(mode & stops[index].source_bit)) {
+            continue;
+        }
+        mask |= stops[index].status_bit;
+        GError *failure = NULL;
+        JptExchange *reply = client_exchange(client, stops[index].command,
+                                             (const guint8[]){0, 0}, 2, &failure);
+        if (reply != NULL) {
+            guint16 echo = 0;
+            if (g_bytes_get_size(reply->frame->payload) != 2 ||
+                !jpt_device_decode_u16(reply->frame, &echo, NULL) || echo != 0) {
+                g_set_error(&failure, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD,
+                            "Incorrect shutdown acknowledgement for 0x%04X", stops[index].command);
+            }
+            jpt_exchange_free(reply);
+        }
+        if (failure != NULL) {
+            if (write_error == NULL) {
+                write_error = failure;
+            } else {
+                g_clear_error(&failure);
+            }
+            if (!jpt_transport_is_connected(&client->transport)) {
+                break;
+            }
+        }
+    }
+    if (write_error != NULL) {
+        g_propagate_error(error, write_error);
+        return FALSE;
+    }
+    guint16 status, power = 0;
+    if (!client_read_u16(client, JPT_CMD_STATUS, &status, error) ||
+        ((mode & (1u << 4)) && !client_read_u16(client, JPT_CMD_REAL_POWER, &power, error))) {
+        return FALSE;
+    }
+    if ((status & mask) || power != 0) {
+        g_set_error(error, G_IO_ERROR, G_IO_ERROR_FAILED,
+                    "Shutdown not confirmed: status 0x%04X (mask 0x%04X), power %u%%",
+                    status, mask, power);
+        return FALSE;
+    }
+    jpt_transport_disconnect(&client->transport);
+    return TRUE;
+}
+
 static void free_job(JptJob *job)
 {
     g_free(job->address);
@@ -238,6 +304,13 @@ static gpointer worker_main(gpointer data)
         case JPT_JOB_DISCONNECT:
             jpt_transport_disconnect(&client->transport);
             result.type = JPT_CLIENT_DISCONNECTED;
+            break;
+        case JPT_JOB_SAFE_DISCONNECT:
+            result.type = JPT_CLIENT_DISCONNECTED;
+            if (!safe_disconnect(client, &result.error)) {
+                result.connected = jpt_transport_is_connected(&client->transport);
+                result.connection_lost = !result.connected;
+            }
             break;
         case JPT_JOB_INITIAL_READ:
         case JPT_JOB_POLL:
@@ -326,6 +399,18 @@ void jpt_client_connect_tcp_async(JptClient *client, const gchar *host, guint16 
 void jpt_client_disconnect_async(JptClient *client, JptClientCallback callback, gpointer user_data)
 {
     enqueue_job(client, new_job(JPT_JOB_DISCONNECT, callback, user_data));
+}
+
+void jpt_client_safe_disconnect_async(JptClient *client, JptClientCallback callback, gpointer user_data)
+{
+    enqueue_job(client, new_job(JPT_JOB_SAFE_DISCONNECT, callback, user_data));
+}
+
+void jpt_client_read_async(JptClient *client, guint16 command, JptClientCallback callback, gpointer user_data)
+{
+    GBytes *payload = g_bytes_new_static("\0\0", 2);
+    jpt_client_request_async(client, command, payload, callback, user_data);
+    g_bytes_unref(payload);
 }
 
 void jpt_client_read_initial_async(JptClient *client, JptClientCallback callback, gpointer user_data)
