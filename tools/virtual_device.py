@@ -17,6 +17,8 @@ class VirtualDevice:
 
     def __init__(self, fault=None):
         self.fault = fault
+        self.address = bytes((192, 168, 0, 10))
+        self.port = 5000
         self.buffer = bytearray()
         self.resync = False
         self.registers = {
@@ -48,6 +50,8 @@ class VirtualDevice:
                     return struct.pack("<H", 1)
             mask = self.flags[command]
             self.registers[0x38] = (self.registers[0x38] & ~mask) | (value * mask)
+        elif command == 0x6F and value:
+            self.port = value
         elif value != 0:
             return None
         elif command in self.registers:
@@ -73,7 +77,7 @@ class VirtualDevice:
             if len(self.buffer) < 4:
                 break
             command, length = struct.unpack_from("<HB", self.buffer, 1)
-            if length != 2:
+            if length != (4 if command == 0x6E else 2):
                 del self.buffer[:4]
                 self.resync = True
                 output.append(0x45)
@@ -86,7 +90,11 @@ class VirtualDevice:
                 del self.buffer[:next_start if next_start >= 0 else end + 1]
                 output.append(0x45)
                 continue
-            payload = self.reply(command, struct.unpack_from("<H", self.buffer, 4)[0])
+            if command == 0x6E:
+                self.address = bytes(self.buffer[4:end])
+                payload = self.address
+            else:
+                payload = self.reply(command, struct.unpack_from("<H", self.buffer, 4)[0])
             del self.buffer[:end + 1]
             if payload is None:
                 output.append(0x45)

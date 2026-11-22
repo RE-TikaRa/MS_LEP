@@ -141,6 +141,8 @@ gboolean jpt_device_decode_info(const JptFrame *frame, JptDeviceInfo *info, GErr
 gboolean jpt_device_decode_m7_cutoffs(const JptFrame *frame, guint16 values[JPT_M7_CUTOFF_COUNT], GError **error);
 GBytes *jpt_device_m7_cutoff_payload(const guint16 values[JPT_M7_CUTOFF_COUNT]);
 GArray *jpt_device_decode_alarm_cache(const JptFrame *frame, GError **error);
+gboolean jpt_device_power_from_percent(guint percent, guint16 *raw);
+gdouble jpt_device_power_to_percent(guint16 raw);
 void jpt_device_decode_status(guint16 status, JptTelemetry *telemetry);
 
 G_END_DECLS

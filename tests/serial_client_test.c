@@ -80,6 +80,15 @@ int main(int argc, char **argv)
     g_assert_no_error(probe.error);
     g_assert_cmpuint(probe.result.telemetry.lock_frequency, ==, 314);
 
+    jpt_client_set_address_async(client, "::1", 5000, completed, &probe);
+    wait_for(&probe, JPT_CLIENT_EXCHANGE);
+    g_assert_error(probe.error, G_IO_ERROR, G_IO_ERROR_INVALID_ARGUMENT);
+    g_assert_false(probe.result.connection_lost);
+    jpt_client_set_address_async(client, "192.0.2.7", 5521, completed, &probe);
+    wait_for(&probe, JPT_CLIENT_EXCHANGE);
+    g_assert_no_error(probe.error);
+    g_assert_cmpuint(probe.word, ==, 5521);
+
     jpt_client_safe_disconnect_async(client, completed, &probe);
     wait_for(&probe, JPT_CLIENT_DISCONNECTED);
     if (g_str_equal(argv[2], "normal")) {
