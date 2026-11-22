@@ -18,6 +18,7 @@ class VirtualDevice:
     def __init__(self, fault=None):
         self.fault = fault
         self.buffer = bytearray()
+        self.resync = False
         self.registers = {
             0x32: 0, 0x33: 20, 0x34: 100, 0x35: 0, 0x36: 0x1C,
             0x38: 0x18, 0x39: 0, 0x3A: 20, 0x3B: 100, 0x40: 0x10,
@@ -61,14 +62,22 @@ class VirtualDevice:
         self.buffer.extend(data)
         output = bytearray()
         while self.buffer:
-            if self.buffer[0] != 0x24:
+            if self.resync or self.buffer[0] != 0x24:
                 next_start = self.buffer.find(b"$")
+                if not self.resync:
+                    output.append(0x45)
+                self.resync = next_start < 0
                 del self.buffer[:next_start if next_start >= 0 else len(self.buffer)]
-                output.append(0x45)
-                continue
+                if self.resync:
+                    break
             if len(self.buffer) < 4:
                 break
             command, length = struct.unpack_from("<HB", self.buffer, 1)
+            if length != 2:
+                del self.buffer[:4]
+                self.resync = True
+                output.append(0x45)
+                continue
             end = 4 + length
             if len(self.buffer) <= end:
                 break
@@ -77,7 +86,7 @@ class VirtualDevice:
                 del self.buffer[:next_start if next_start >= 0 else end + 1]
                 output.append(0x45)
                 continue
-            payload = self.reply(command, struct.unpack_from("<H", self.buffer, 4)[0]) if length == 2 else None
+            payload = self.reply(command, struct.unpack_from("<H", self.buffer, 4)[0])
             del self.buffer[:end + 1]
             if payload is None:
                 output.append(0x45)
