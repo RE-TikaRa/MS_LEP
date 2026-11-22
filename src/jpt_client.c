@@ -45,6 +45,7 @@ struct _JptClient {
     GThread *worker;
     JptTransport transport;
     JptTelemetry telemetry;
+    gboolean settings_dirty;
     JptTraceCallback trace_callback;
     gpointer trace_data;
     gint stopping;
@@ -154,8 +155,12 @@ static gboolean client_read_telemetry(JptClient *client, JptTelemetry *telemetry
         gboolean ok = jpt_device_decode_serial(serial->frame, telemetry->serial_number,
                                                 sizeof(telemetry->serial_number), error);
         jpt_exchange_free(serial);
-        if (!ok ||
-            !client_read_u16(client, JPT_CMD_READ_DEFAULT_SIMMER, &telemetry->default_simmer, error) ||
+        if (!ok) {
+            return FALSE;
+        }
+    }
+    if (initial || client->settings_dirty) {
+        if (!client_read_u16(client, JPT_CMD_READ_DEFAULT_SIMMER, &telemetry->default_simmer, error) ||
             !client_read_u16(client, JPT_CMD_READ_DEFAULT_PULSE_WIDTH, &telemetry->default_pulse_width, error) ||
             !client_read_u16(client, JPT_CMD_READ_LOCK_FREQUENCY, &telemetry->lock_frequency, error) ||
             !client_read_u16(client, JPT_CMD_READ_PARAMETER_SELECT, &telemetry->parameter_select, error) ||
@@ -327,6 +332,7 @@ static gpointer worker_main(gpointer data)
             if (client_read_telemetry(client, &result.telemetry,
                                       job->type == JPT_JOB_INITIAL_READ, &result.error)) {
                 client->telemetry = result.telemetry;
+                client->settings_dirty = FALSE;
             }
             break;
         case JPT_JOB_REQUEST: {
@@ -334,6 +340,19 @@ static gpointer worker_main(gpointer data)
             gsize payload_length = 0;
             const guint8 *payload = g_bytes_get_data(job->payload, &payload_length);
             result.exchange = client_exchange(client, job->command, payload, payload_length, &result.error);
+            if (result.exchange != NULL) {
+                switch (job->command) {
+                case JPT_CMD_DEFAULT_SIMMER:
+                case JPT_CMD_DEFAULT_PULSE_WIDTH:
+                case JPT_CMD_LOCK_FREQUENCY:
+                case JPT_CMD_PARAMETER_SELECT:
+                case JPT_CMD_LOCK_POWER:
+                case JPT_CMD_RED_LIGHT_POWER:
+                case JPT_CMD_LOCK_PARAMETER:
+                    client->settings_dirty = TRUE;
+                    break;
+                }
+            }
             break;
         }
         case JPT_JOB_STOP:
