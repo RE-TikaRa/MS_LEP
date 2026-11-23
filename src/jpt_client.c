@@ -3,6 +3,7 @@
 #include <string.h>
 
 typedef enum {
+    JPT_JOB_SET_HISTORY,
     JPT_JOB_CONNECT_SERIAL,
     JPT_JOB_CONNECT_TCP,
     JPT_JOB_DISCONNECT,
@@ -46,6 +47,9 @@ struct _JptClient {
     GThread *worker;
     JptTransport transport;
     JptTelemetry telemetry;
+    gchar *alarm_directory;
+    JptAlarmHistory *history;
+    gboolean history_failed;
     gboolean settings_dirty;
     JptTraceCallback trace_callback;
     gpointer trace_data;
@@ -61,11 +65,18 @@ static gboolean dispatch_completion(gpointer data)
     return G_SOURCE_REMOVE;
 }
 
+static void clear_result(JptClientResult *result)
+{
+    g_clear_pointer(&result->exchange, jpt_exchange_free);
+    g_clear_error(&result->error);
+    g_clear_pointer(&result->alarm_events, g_array_unref);
+    g_clear_error(&result->history_error);
+}
+
 static void free_completion(gpointer data)
 {
     JptCompletion *completion = data;
-    g_clear_pointer(&completion->result.exchange, jpt_exchange_free);
-    g_clear_error(&completion->result.error);
+    clear_result(&completion->result);
     g_free(completion);
 }
 
@@ -245,8 +256,7 @@ static gboolean client_read_telemetry(JptClient *client, JptTelemetry *telemetry
 static void complete_job(JptClient *client, const JptJob *job, JptClientResult *result)
 {
     if (job->callback == NULL) {
-        g_clear_pointer(&result->exchange, jpt_exchange_free);
-        g_clear_error(&result->error);
+        clear_result(result);
         return;
     }
 
@@ -325,6 +335,30 @@ static void free_job(JptJob *job)
     g_free(job);
 }
 
+static void reset_history(JptClient *client)
+{
+    g_clear_pointer(&client->history, jpt_alarm_history_free);
+    client->history_failed = FALSE;
+}
+
+static void observe_alarms(JptClient *client, JptClientResult *result)
+{
+    if (client->alarm_directory == NULL || client->history_failed) {
+        return;
+    }
+    if (client->history == NULL) {
+        client->history = jpt_alarm_history_open(client->alarm_directory, result->telemetry.serial_number,
+                                                 &result->history_error);
+    }
+    if (client->history != NULL) {
+        result->alarm_events = jpt_alarm_history_observe(client->history, result->telemetry.alarm_state,
+                                                         g_get_real_time() / G_USEC_PER_SEC, &result->history_error);
+    }
+    if (result->history_error && !g_error_matches(result->history_error, G_IO_ERROR, G_IO_ERROR_WOULD_BLOCK)) {
+        client->history_failed = TRUE;
+    }
+}
+
 static gpointer worker_main(gpointer data)
 {
     JptClient *client = data;
@@ -337,13 +371,20 @@ static gpointer worker_main(gpointer data)
 
         JptClientResult result = {0};
         switch (job->type) {
+        case JPT_JOB_SET_HISTORY:
+            reset_history(client);
+            g_free(client->alarm_directory);
+            client->alarm_directory = g_steal_pointer(&job->address);
+            break;
         case JPT_JOB_CONNECT_SERIAL:
+            reset_history(client);
             memset(&client->telemetry, 0, sizeof(client->telemetry));
             result.type = JPT_CLIENT_CONNECTION;
             result.connected = jpt_transport_connect_serial(&client->transport, job->address,
                                                             &job->serial_config, &result.error);
             break;
         case JPT_JOB_CONNECT_TCP:
+            reset_history(client);
             memset(&client->telemetry, 0, sizeof(client->telemetry));
             result.type = JPT_CLIENT_CONNECTION;
             result.connected = jpt_transport_connect_tcp(&client->transport, job->address, job->port,
@@ -368,6 +409,7 @@ static gpointer worker_main(gpointer data)
                                       job->type == JPT_JOB_INITIAL_READ, &result.error)) {
                 client->telemetry = result.telemetry;
                 client->settings_dirty = FALSE;
+                observe_alarms(client, &result);
             }
             break;
         case JPT_JOB_SET_ADDRESS:
@@ -454,6 +496,13 @@ void jpt_client_connect_serial_async(JptClient *client, const gchar *path,
     enqueue_job(client, job);
 }
 
+void jpt_client_set_alarm_directory(JptClient *client, const gchar *directory)
+{
+    JptJob *job = new_job(JPT_JOB_SET_HISTORY, NULL, NULL);
+    job->address = g_strdup(directory);
+    enqueue_job(client, job);
+}
+
 void jpt_client_connect_tcp_async(JptClient *client, const gchar *host, guint16 port,
                                   JptClientCallback callback, gpointer user_data)
 {
@@ -535,6 +584,8 @@ void jpt_client_free(JptClient *client)
         g_main_context_iteration(client->context, FALSE);
     }
     g_async_queue_unref(client->queue);
+    reset_history(client);
+    g_free(client->alarm_directory);
     g_main_context_unref(client->context);
     g_free(client);
 }

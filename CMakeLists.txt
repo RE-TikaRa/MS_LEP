@@ -21,7 +21,8 @@ target_compile_definitions(ms_lep_core PRIVATE
     GLIB_VERSION_MAX_ALLOWED=GLIB_VERSION_2_56
 )
 if(UNIX)
-    target_sources(ms_lep_core PRIVATE src/jpt_transport.c src/jpt_serial_ports.c src/jpt_client.c)
+    target_sources(ms_lep_core PRIVATE src/jpt_transport.c src/jpt_serial_ports.c src/jpt_client.c
+        src/jpt_alarm_history.c)
 endif()
 
 if(BUILD_TESTING)
@@ -30,6 +31,9 @@ if(BUILD_TESTING)
     add_test(NAME protocol COMMAND ms_lep_protocol_test)
 
     if(UNIX)
+        add_executable(ms_lep_alarm_history_test tests/alarm_history_test.c)
+        target_link_libraries(ms_lep_alarm_history_test PRIVATE ms_lep_core)
+        add_test(NAME alarm_history COMMAND ms_lep_alarm_history_test)
         add_executable(ms_lep_transport_test tests/transport_test.c)
         target_link_libraries(ms_lep_transport_test PRIVATE ms_lep_core)
         add_test(NAME transport COMMAND ms_lep_transport_test)

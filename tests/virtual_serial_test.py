@@ -2,6 +2,7 @@ from pathlib import Path
 import select
 import subprocess
 import sys
+import tempfile
 import time
 import unittest
 
@@ -94,9 +95,13 @@ class VirtualSerialTests(unittest.TestCase):
             self.assertEqual(receive(port, 7), bytes.fromhex("24 3b 00 02 2a 00 2a"))
 
     def test_core_client(self):
-        for scenario in ("normal", "empty-cache", "reject-stop", "bad-ack", "stuck-status"):
-            with self.subTest(scenario=scenario), SerialFixture(None if scenario == "normal" else scenario) as device:
-                subprocess.run([client, device.path, scenario], check=True, timeout=15)
+        for scenario in ("normal", "empty-cache", "reject-stop", "bad-ack", "stuck-status", "history-error"):
+            fault = None if scenario in ("normal", "history-error") else scenario
+            with self.subTest(scenario=scenario), SerialFixture(fault) as device, tempfile.TemporaryDirectory() as folder:
+                journal = Path(folder) / "alarms"
+                if scenario == "history-error":
+                    journal.touch()
+                subprocess.run([client, device.path, scenario, str(journal)], check=True, timeout=15)
 
 
 unittest.main()
