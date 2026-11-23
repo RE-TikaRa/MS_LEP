@@ -261,7 +261,7 @@ static void test_power_units(void)
     g_assert_true(jpt_device_power_from_percent(0, &raw));
     g_assert_cmpuint(raw, ==, 0);
     g_assert_true(jpt_device_power_from_percent(50, &raw));
-    g_assert_cmpuint(raw, ==, 2048);
+    g_assert_cmpuint(raw, ==, 2047);
     g_assert_cmpfloat(ABS(jpt_device_power_to_percent(raw) - 50.0), <, 0.02);
     g_assert_true(jpt_device_power_from_percent(100, &raw));
     g_assert_cmpuint(raw, ==, 4095);

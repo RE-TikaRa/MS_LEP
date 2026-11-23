@@ -70,6 +70,8 @@ class VirtualSerialTests(unittest.TestCase):
             ("24 08 00 02 10 00 2A", "24 08 00 02 10 00 2A"),
             ("24 36 00 02 00 00 2A", "24 36 00 02 10 00 2A"),
             ("24 07 00 02 08 00 2A", "24 07 00 02 08 00 2A"),
+            ("24 07 00 02 3F 00 2A", "24 07 00 02 3F 00 2A"),
+            ("24 35 00 02 00 00 2A", "24 35 00 02 3F 00 2A"),
             ("24 19 00 02 01 00 2A", "24 19 00 02 01 00 2A"),
         ]
         with SerialFixture() as device, open(device.path, "r+b", buffering=0) as port:

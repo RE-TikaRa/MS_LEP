@@ -17,7 +17,7 @@ gboolean jpt_device_power_from_percent(guint percent, guint16 *raw)
     if (percent > 100) {
         return FALSE;
     }
-    *raw = (guint16)((percent * 4095 + 50) / 100);
+    *raw = (guint16)(percent * 4095 / 100);
     return TRUE;
 }
 
