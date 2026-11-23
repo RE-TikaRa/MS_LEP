@@ -6,6 +6,17 @@ import struct
 import tty
 
 
+def alarm_cache():
+    payload = bytearray([3])
+    for index, (alarm_type, category) in enumerate([(0, 0), (2, 0), (5, 1)]):
+        payload.extend((alarm_type, category))
+        for base in (35, 120, 60, (185, 285, 2400)[index], 410):
+            payload.extend(struct.pack("<10H", *(base + sample for sample in range(10))))
+        payload.extend((72000 + index).to_bytes(3, "little"))
+        payload.extend((360 + index).to_bytes(3, "little"))
+    return bytes(payload)
+
+
 class VirtualDevice:
     writes = {
         0x01: (0x39, 0, 4095), 0x02: (0x3B, 1, 4000), 0x03: (0x3A, 1, 500),
@@ -32,6 +43,7 @@ class VirtualDevice:
             0x42: struct.pack("<8H", 0, 0, 0, 0, 1, 0, 0, 0),
             0x3D: b"SIM-MCU1", 0x3E: b"SIM-FPGA", 0x9C: b"VIRTUAL-M7",
             0x46: bytes.fromhex("78 00 00 0a 00 00"),
+            0x93: alarm_cache(),
         }
 
     def reply(self, command, value):
@@ -99,7 +111,8 @@ class VirtualDevice:
             if payload is None:
                 output.append(0x45)
             else:
-                output.extend(b"$" + struct.pack("<HB", command, len(payload)) + payload + b"*")
+                header = struct.pack("<HH" if command == 0x93 else "<HB", command, len(payload))
+                output.extend(b"$" + header + payload + b"*")
         return bytes(output)
 
 
@@ -123,7 +136,12 @@ def serve(device):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--fault", choices=("reject-stop", "bad-ack", "stuck-status"))
+    parser.add_argument("--empty-alarm-cache", action="store_true")
+    args = parser.parse_args()
+    device = VirtualDevice(args.fault)
+    if args.empty_alarm_cache:
+        device.blocks[0x93] = b"\0"
     try:
-        serve(VirtualDevice(parser.parse_args().fault))
+        serve(device)
     except KeyboardInterrupt:
         pass

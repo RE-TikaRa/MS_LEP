@@ -31,6 +31,21 @@ GBytes *jpt_frame_encode(guint16 command, const guint8 *payload, gsize payload_l
     return g_bytes_new_take(bytes, payload_length + 5);
 }
 
+guint jpt_reply_header(const guint8 *data, gsize length, guint16 *command, guint16 *payload_length)
+{
+    if (length < 4 || data[0] != JPT_FRAME_START) {
+        return 0;
+    }
+    guint16 code = data[1] | ((guint16)data[2] << 8);
+    guint size = code == JPT_CMD_READ_ALARM_CACHE ? 5 : 4;
+    if (length < size) {
+        return 0;
+    }
+    *command = code;
+    *payload_length = size == 5 ? data[3] | ((guint16)data[4] << 8) : data[3];
+    return size;
+}
+
 JptFrame *jpt_frame_new(guint16 command, const guint8 *payload, gsize payload_length)
 {
     JptFrame *frame = g_new0(JptFrame, 1);
@@ -91,12 +106,14 @@ GPtrArray *jpt_parser_push(JptParser *parser, const guint8 *data, gsize length, 
         if (start > 0) {
             g_byte_array_remove_range(parser->buffer, 0, start);
         }
-        if (parser->buffer->len < 4) {
+        guint16 command, payload_length;
+        guint header_size = jpt_reply_header(parser->buffer->data, parser->buffer->len,
+                                             &command, &payload_length);
+        if (header_size == 0) {
             break;
         }
 
-        guint payload_length = parser->buffer->data[3];
-        guint frame_length = payload_length + 5;
+        guint frame_length = header_size + payload_length + 1;
         if (parser->buffer->len < frame_length) {
             break;
         }
@@ -105,19 +122,9 @@ GPtrArray *jpt_parser_push(JptParser *parser, const guint8 *data, gsize length, 
             continue;
         }
 
-        guint16 command = (guint16)parser->buffer->data[1] |
-                          ((guint16)parser->buffer->data[2] << 8);
-        JptFrame *frame = jpt_frame_new(command, parser->buffer->data + 4, payload_length);
+        JptFrame *frame = jpt_frame_new(command, parser->buffer->data + header_size, payload_length);
         g_ptr_array_add(frames, frame);
         g_byte_array_remove_range(parser->buffer, 0, frame_length);
-    }
-
-    if (parser->buffer->len > 260) {
-        g_byte_array_set_size(parser->buffer, 0);
-        g_set_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_FRAME,
-                    "JPT receive buffer exceeded the maximum frame size");
-        g_ptr_array_unref(frames);
-        return NULL;
     }
 
     return frames;

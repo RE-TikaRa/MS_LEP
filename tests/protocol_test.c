@@ -165,24 +165,26 @@ static void test_m7_table(void)
 
 static void test_alarm_cache(void)
 {
-    guint8 payload[114] = {0};
-    JptFrame *frame = jpt_frame_new(JPT_CMD_READ_ALARM_CACHE, payload, 6);
-    GArray *records = jpt_device_decode_alarm_cache(frame, NULL);
-    g_assert_nonnull(records);
-    g_assert_cmpuint(records->len, ==, 0);
-    g_array_unref(records);
-    jpt_frame_free(frame);
-    payload[5] = 1;
-    payload[6] = 3;
-    payload[7] = 2;
-    for (guint index = 0; index < 50; index++) {
-        payload[8 + 2 * index] = (guint8)index;
-        payload[9 + 2 * index] = 1;
+    guint8 payload[109] = {0};
+    for (gsize size = 0; size <= 1; size++) {
+        JptFrame *empty = jpt_frame_new(JPT_CMD_READ_ALARM_CACHE, payload, size);
+        GArray *records = jpt_device_decode_alarm_cache(empty, NULL);
+        g_assert_nonnull(records);
+        g_assert_cmpuint(records->len, ==, 0);
+        g_array_unref(records);
+        jpt_frame_free(empty);
     }
-    payload[108] = 22;
-    payload[113] = 1;
-    frame = jpt_frame_new(JPT_CMD_READ_ALARM_CACHE, payload, sizeof(payload));
-    records = jpt_device_decode_alarm_cache(frame, NULL);
+    payload[0] = 1;
+    payload[1] = 3;
+    payload[2] = 2;
+    for (guint index = 0; index < 50; index++) {
+        payload[3 + 2 * index] = (guint8)index;
+        payload[4 + 2 * index] = 1;
+    }
+    payload[103] = 22;
+    payload[108] = 1;
+    JptFrame *frame = jpt_frame_new(JPT_CMD_READ_ALARM_CACHE, payload, sizeof(payload));
+    GArray *records = jpt_device_decode_alarm_cache(frame, NULL);
     g_assert_nonnull(records);
     g_assert_cmpuint(records->len, ==, 1);
     const JptAlarmRecord *record = &g_array_index(records, JptAlarmRecord, 0);
@@ -203,6 +205,54 @@ static void test_alarm_cache(void)
     g_assert_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD);
     g_clear_error(&error);
     jpt_frame_free(frame);
+}
+
+static void test_alarm_reply_stream(void)
+{
+    guint8 wire[5 + 325 + 1 + 7] = {0x24, 0x93, 0, 0x45, 0x01, 3};
+    wire[14] = 0x2a;
+    wire[330] = 0x2a;
+    memcpy(wire + 331, (guint8[]){0x24, 0x38, 0, 2, 0, 0, 0x2a}, 7);
+    const gsize boundaries[] = {1, 4, 5, 76, 300, 330, sizeof(wire)};
+    JptParser parser;
+    jpt_parser_init(&parser);
+    gsize offset = 0;
+    for (guint index = 0; index < G_N_ELEMENTS(boundaries); index++) {
+        GError *error = NULL;
+        GPtrArray *frames = jpt_parser_push(&parser, wire + offset, boundaries[index] - offset, &error);
+        g_assert_no_error(error);
+        offset = boundaries[index];
+        g_assert_cmpuint(frames->len, ==, offset == sizeof(wire) ? 2 : 0);
+        if (frames->len) {
+            JptFrame *cache = g_ptr_array_index(frames, 0);
+            g_assert_cmpuint(cache->command, ==, JPT_CMD_READ_ALARM_CACHE);
+            g_assert_cmpmem(g_bytes_get_data(cache->payload, NULL), g_bytes_get_size(cache->payload),
+                            wire + 5, 325);
+            GArray *records = jpt_device_decode_alarm_cache(cache, &error);
+            g_assert_no_error(error);
+            g_assert_cmpuint(records->len, ==, 3);
+            g_assert_cmpuint(((JptFrame *)g_ptr_array_index(frames, 1))->command, ==, JPT_CMD_STATUS);
+            g_array_unref(records);
+        }
+        g_ptr_array_unref(frames);
+    }
+    jpt_parser_clear(&parser);
+}
+
+static void test_alarm_extra(void)
+{
+    g_assert_cmpint(jpt_alarm_extra_kind(JPT_CACHE_SENSOR_1, 0), ==, JPT_EXTRA_TEMPERATURE);
+    g_assert_cmpint(jpt_alarm_extra_kind(JPT_CACHE_SENSOR_2, 1), ==, JPT_EXTRA_ABSENT);
+    g_assert_cmpint(jpt_alarm_extra_kind(JPT_CACHE_TEC, 0), ==, JPT_EXTRA_TEC);
+    g_assert_cmpint(jpt_alarm_extra_kind(JPT_CACHE_TEC, 1), ==, JPT_EXTRA_TEMPERATURE);
+    g_assert_cmpint(jpt_alarm_extra_kind(JPT_CACHE_SUPPLY_VOLTAGE, 0), ==, JPT_EXTRA_VOLTAGE);
+    g_assert_cmpint(jpt_alarm_extra_kind(JPT_CACHE_LOW_CURRENT, 0), ==, JPT_EXTRA_VOLTAGE);
+    g_assert_cmpint(jpt_alarm_extra_kind(JPT_CACHE_NO_SEED, 1), ==, JPT_EXTRA_ABSENT);
+    g_assert_cmpint(jpt_alarm_extra_kind(0xfe, 1), ==, JPT_EXTRA_RAW);
+    g_assert_cmpfloat(jpt_alarm_extra_value(JPT_EXTRA_TEMPERATURE, 185), ==, -1.5);
+    g_assert_cmpfloat(jpt_alarm_extra_value(JPT_EXTRA_TEC, 285), ==, 28.5);
+    g_assert_cmpfloat(jpt_alarm_extra_value(JPT_EXTRA_VOLTAGE, 2425), ==, 24.25);
+    g_assert_cmpfloat(jpt_alarm_extra_value(JPT_EXTRA_RAW, 123), ==, 123);
 }
 
 static void test_power_units(void)
@@ -231,5 +281,7 @@ int main(int argc, char **argv)
     g_test_add_func("/device/power/units", test_power_units);
     g_test_add_func("/device/m7/cutoffs", test_m7_table);
     g_test_add_func("/device/alarm/cache", test_alarm_cache);
+    g_test_add_func("/device/alarm/extra", test_alarm_extra);
+    g_test_add_func("/protocol/parser/extended-alarm-reply", test_alarm_reply_stream);
     return g_test_run();
 }
