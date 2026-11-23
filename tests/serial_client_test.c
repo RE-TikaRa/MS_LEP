@@ -7,6 +7,7 @@ typedef struct {
     JptClientResult result;
     GError *error;
     guint16 word;
+    guint cached_alarms;
 } Probe;
 
 static void completed(const JptClientResult *result, gpointer user_data)
@@ -19,6 +20,17 @@ static void completed(const JptClientResult *result, gpointer user_data)
     g_clear_error(&probe->error);
     if (result->error) {
         probe->error = g_error_copy(result->error);
+    } else if (result->exchange && result->exchange->frame->command == JPT_CMD_READ_ALARM_CACHE) {
+        GArray *records = jpt_device_decode_alarm_cache(result->exchange->frame, &probe->error);
+        g_assert_no_error(probe->error);
+        probe->cached_alarms = records->len;
+        if (records->len) {
+            const JptAlarmRecord *last = &g_array_index(records, JptAlarmRecord, records->len - 1);
+            g_assert_cmpuint(last->type, ==, JPT_CACHE_SUPPLY_VOLTAGE);
+            g_assert_cmpuint(last->powered_minutes, ==, 72002);
+            g_assert_cmpuint(last->extra[0][9], ==, 2409);
+        }
+        g_array_unref(records);
     } else if (result->exchange && result->exchange->frame) {
         g_assert_true(jpt_device_decode_u16(result->exchange->frame, &probe->word, NULL));
     }
@@ -57,6 +69,11 @@ int main(int argc, char **argv)
     g_assert_cmpfloat(ABS(probe.result.telemetry.sensor_1_celsius - 25.1), <, 0.001);
     g_assert_cmpuint(probe.result.telemetry.alarm_counts[4], ==, 1);
 
+    jpt_client_read_async(client, JPT_CMD_READ_ALARM_CACHE, completed, &probe);
+    wait_for(&probe, JPT_CLIENT_EXCHANGE);
+    g_assert_no_error(probe.error);
+    g_assert_cmpuint(probe.cached_alarms, ==, g_str_equal(argv[2], "empty-cache") ? 0 : 3);
+
     jpt_client_read_async(client, 0xffab, completed, &probe);
     wait_for(&probe, JPT_CLIENT_EXCHANGE);
     g_assert_error(probe.error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_DEVICE_REJECTED);
@@ -91,7 +108,7 @@ int main(int argc, char **argv)
 
     jpt_client_safe_disconnect_async(client, completed, &probe);
     wait_for(&probe, JPT_CLIENT_DISCONNECTED);
-    if (g_str_equal(argv[2], "normal")) {
+    if (g_str_equal(argv[2], "normal") || g_str_equal(argv[2], "empty-cache")) {
         g_assert_no_error(probe.error);
         g_assert_false(probe.result.connected);
         jpt_client_read_async(client, JPT_CMD_STATUS, completed, &probe);

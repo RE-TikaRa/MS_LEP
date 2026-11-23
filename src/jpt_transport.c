@@ -323,23 +323,32 @@ JptExchange *jpt_transport_exchange(JptTransport *transport, guint16 command,
         return NULL;
     }
 
-    guint8 header[3];
-    if (!transport_read_all(transport, header, sizeof(header), error)) {
+    guint8 header[5] = {first};
+    if (!transport_read_all(transport, header + 1, 3, error)) {
         g_bytes_unref(transmitted);
         jpt_transport_disconnect(transport);
         return NULL;
     }
-    guint response_length = header[2];
-    guint8 *received_data = g_malloc(response_length + 5);
-    received_data[0] = first;
-    memcpy(received_data + 1, header, sizeof(header));
-    if (!transport_read_all(transport, received_data + 4, response_length + 1, error)) {
+    guint16 response_command, response_length;
+    guint header_size = jpt_reply_header(header, 4, &response_command, &response_length);
+    if (!header_size) {
+        if (!transport_read_all(transport, header + 4, 1, error)) {
+            g_bytes_unref(transmitted);
+            jpt_transport_disconnect(transport);
+            return NULL;
+        }
+        header_size = jpt_reply_header(header, sizeof(header), &response_command, &response_length);
+    }
+    guint frame_size = header_size + response_length + 1;
+    guint8 *received_data = g_malloc(frame_size);
+    memcpy(received_data, header, header_size);
+    if (!transport_read_all(transport, received_data + header_size, response_length + 1, error)) {
         g_bytes_unref(transmitted);
         g_free(received_data);
         jpt_transport_disconnect(transport);
         return NULL;
     }
-    if (received_data[response_length + 4] != JPT_FRAME_END) {
+    if (received_data[frame_size - 1] != JPT_FRAME_END) {
         g_bytes_unref(transmitted);
         g_free(received_data);
         g_set_error(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_FRAME,
@@ -348,11 +357,10 @@ JptExchange *jpt_transport_exchange(JptTransport *transport, guint16 command,
         return NULL;
     }
 
-    guint16 response_command = (guint16)received_data[1] | ((guint16)received_data[2] << 8);
     JptExchange *exchange = g_new0(JptExchange, 1);
-    exchange->frame = jpt_frame_new(response_command, received_data + 4, response_length);
+    exchange->frame = jpt_frame_new(response_command, received_data + header_size, response_length);
     exchange->transmitted = transmitted;
-    exchange->received = g_bytes_new_take(received_data, response_length + 5);
+    exchange->received = g_bytes_new_take(received_data, frame_size);
     return exchange;
 }
 

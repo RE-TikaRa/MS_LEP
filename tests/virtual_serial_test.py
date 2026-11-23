@@ -13,7 +13,9 @@ client = sys.argv.pop(1)
 class SerialFixture:
     def __init__(self, fault=None):
         self.args = [sys.executable, program]
-        if fault:
+        if fault == "empty-cache":
+            self.args.append("--empty-alarm-cache")
+        elif fault:
             self.args.extend(["--fault", fault])
 
     def __enter__(self):
@@ -92,7 +94,7 @@ class VirtualSerialTests(unittest.TestCase):
             self.assertEqual(receive(port, 7), bytes.fromhex("24 3b 00 02 2a 00 2a"))
 
     def test_core_client(self):
-        for scenario in ("normal", "reject-stop", "bad-ack", "stuck-status"):
+        for scenario in ("normal", "empty-cache", "reject-stop", "bad-ack", "stuck-status"):
             with self.subTest(scenario=scenario), SerialFixture(None if scenario == "normal" else scenario) as device:
                 subprocess.run([client, device.path, scenario], check=True, timeout=15)
 
