@@ -124,6 +124,7 @@ struct _LaserConsole {
     GtkLabel *alarm_counts[8];
     GtkTextBuffer *log_buffer;
     GtkTextBuffer *alarm_history_buffer;
+    GtkLabel *alarm_history_error;
     GtkStack *alarm_history_stack;
     GtkWidget *alarm_replay;
     gboolean alarm_cache_pending;
@@ -175,11 +176,9 @@ struct _LaserConsole {
     gboolean red_on;
     gboolean mo_on;
     gboolean command_error_active;
-    gboolean alarm_history_initialized;
     gboolean shutdown_in_progress;
     gboolean shutdown_complete;
     gboolean shutdown_close_window;
-    guint16 last_alarm_state;
 };
 
 static const gchar *alarm_names[] = {
@@ -271,20 +270,43 @@ static void append_log(LaserConsole *console, const gchar *format, ...)
     g_free(message);
 }
 
-static void append_alarm_history(LaserConsole *console, guint16 alarm_state)
+static void display_alarm_history(LaserConsole *console, const JptClientResult *result)
 {
-    if (console->alarm_history_buffer == NULL) {
+    if (result->history_error != NULL) {
+        gchar *message = g_strdup_printf("本机报警历史：%s", result->history_error->message);
+        gtk_label_set_text(console->alarm_history_error, message);
+        gtk_widget_set_visible(GTK_WIDGET(console->alarm_history_error), TRUE);
+        g_free(message);
+    }
+    if (result->alarm_events == NULL) {
         return;
     }
-    GDateTime *now = g_date_time_new_now_local();
-    gchar *timestamp = g_date_time_format(now, "%Y-%m-%d %H:%M:%S");
-    GtkTextIter end;
-    gtk_text_buffer_get_end_iter(console->alarm_history_buffer, &end);
-    gchar *message = g_strdup_printf("%s  报警字变更为 0x%04X\n", timestamp, alarm_state);
-    gtk_text_buffer_insert(console->alarm_history_buffer, &end, message, -1);
-    g_free(message);
-    g_free(timestamp);
-    g_date_time_unref(now);
+    gtk_widget_set_visible(GTK_WIDGET(console->alarm_history_error), FALSE);
+    if (result->alarm_events->len == 0) {
+        return;
+    }
+    GString *lines = g_string_new(NULL);
+    for (guint index = result->alarm_events->len; index > 0; index--) {
+        const JptAlarmEvent *event = &g_array_index(result->alarm_events, JptAlarmEvent, index - 1);
+        g_autoptr(GDateTime) time = g_date_time_new_from_unix_local(event->timestamp);
+        g_autofree gchar *stamp = g_date_time_format(time, "%Y-%m-%d %H:%M:%S");
+        for (guint bit = 0; bit < 16; bit++) {
+            if (!(event->raised & (1u << bit))) {
+                continue;
+            }
+            if (bit < G_N_ELEMENTS(alarm_names)) {
+                g_string_append_printf(lines, "%s  %s\n", stamp, alarm_names[bit]);
+            } else if (bit == 8) {
+                g_string_append_printf(lines, "%s  电流过大\n", stamp);
+            } else {
+                g_string_append_printf(lines, "%s  未知报警位 %u\n", stamp, bit);
+            }
+        }
+    }
+    GtkTextIter start;
+    gtk_text_buffer_get_start_iter(console->alarm_history_buffer, &start);
+    gtk_text_buffer_insert(console->alarm_history_buffer, &start, lines->str, -1);
+    g_string_free(lines, TRUE);
 }
 
 static void alarm_history_buffer_changed(GtkTextBuffer *buffer, gpointer user_data)
@@ -1062,11 +1084,6 @@ static void update_control_source_label(LaserConsole *console)
 
 static void update_telemetry(LaserConsole *console, const JptTelemetry *telemetry)
 {
-    if (console->alarm_history_initialized && console->last_alarm_state != telemetry->alarm_state) {
-        append_alarm_history(console, telemetry->alarm_state);
-    }
-    console->last_alarm_state = telemetry->alarm_state;
-    console->alarm_history_initialized = TRUE;
     console->telemetry = *telemetry;
     update_control_source_label(console);
     if (telemetry->serial_number[0] != '\0') {
@@ -1188,6 +1205,8 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             console->command_error_active = FALSE;
             console->alarm_cache_pending = FALSE;
             alarm_replay_set(console->alarm_replay, NULL, "尚未读取报警缓存");
+            gtk_text_buffer_set_text(console->alarm_history_buffer, "", 0);
+            gtk_widget_set_visible(GTK_WIDGET(console->alarm_history_error), FALSE);
             extension_set_status(console, "");
             gtk_label_set_text(console->priority_label, "未读取");
             gtk_widget_set_sensitive(console->priority_read_button, TRUE);
@@ -1277,6 +1296,7 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             }
             return;
         }
+        display_alarm_history(console, result);
         update_telemetry(console, &result->telemetry);
         if (!console->command_error_active) {
             set_last_error(console, NULL);
@@ -2523,8 +2543,15 @@ static GtkWidget *build_alarm_history_page(LaserConsole *console)
     }
     adw_preferences_page_add(page, console->alarm_actions_group);
 
-    AdwPreferencesGroup *history_group = make_group("报警状态变化");
-    GtkButton *clear = GTK_BUTTON(gtk_button_new_with_label("清空记录"));
+    AdwPreferencesGroup *history_group = make_group("本机报警历史");
+    console->alarm_history_error = GTK_LABEL(gtk_label_new(NULL));
+    gtk_label_set_xalign(console->alarm_history_error, 0.0f);
+    gtk_label_set_wrap(console->alarm_history_error, TRUE);
+    gtk_widget_add_css_class(GTK_WIDGET(console->alarm_history_error), "error");
+    adw_preferences_group_add(history_group, GTK_WIDGET(console->alarm_history_error));
+    gtk_widget_set_visible(GTK_WIDGET(console->alarm_history_error), FALSE);
+    GtkButton *clear = GTK_BUTTON(gtk_button_new_with_label("清空显示"));
+    gtk_widget_set_tooltip_text(GTK_WIDGET(clear), "仅清空当前列表，保留本机历史文件");
     gtk_widget_add_css_class(GTK_WIDGET(clear), "flat");
     g_signal_connect(clear, "clicked", G_CALLBACK(clear_log_clicked), console->alarm_history_buffer);
     adw_preferences_group_set_header_suffix(history_group, GTK_WIDGET(clear));
@@ -2775,6 +2802,7 @@ static void release_console(LaserConsole *console)
     close_serial_picker(console);
     shutdown_dialog_destroy(console);
     jpt_client_free(console->client);
+    g_object_unref(console->alarm_history_buffer);
     g_ptr_array_unref(console->write_buttons);
     g_ptr_array_unref(console->serial_ports);
     g_free(console->selected_serial_path);
@@ -2805,6 +2833,8 @@ GtkWidget *laser_console_create(AdwApplication *application)
 {
     LaserConsole *console = g_new0(LaserConsole, 1);
     console->client = jpt_client_new(trace_callback, console);
+    g_autofree gchar *alarm_directory = g_build_filename(g_get_user_data_dir(), "ms-lep", "alarms", NULL);
+    jpt_client_set_alarm_directory(console->client, alarm_directory);
     console->write_buttons = g_ptr_array_new();
 
     GtkWidget *window = adw_application_window_new(GTK_APPLICATION(application));
