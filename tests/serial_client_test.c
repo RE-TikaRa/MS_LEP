@@ -8,6 +8,9 @@ typedef struct {
     GError *error;
     guint16 word;
     guint cached_alarms;
+    gboolean history_error;
+    guint history_count;
+    guint16 history_raised;
 } Probe;
 
 static void completed(const JptClientResult *result, gpointer user_data)
@@ -17,6 +20,11 @@ static void completed(const JptClientResult *result, gpointer user_data)
     probe->result.connected = result->connected;
     probe->result.connection_lost = result->connection_lost;
     probe->result.telemetry = result->telemetry;
+    probe->history_error = result->history_error != NULL;
+    probe->history_count = result->alarm_events ? result->alarm_events->len : 0;
+    if (probe->history_count) {
+        probe->history_raised = g_array_index(result->alarm_events, JptAlarmEvent, 0).raised;
+    }
     g_clear_error(&probe->error);
     if (result->error) {
         probe->error = g_error_copy(result->error);
@@ -45,13 +53,15 @@ static void wait_for(Probe *probe, JptClientResultType expected)
 
 int main(int argc, char **argv)
 {
-    if (argc != 3 || !g_str_has_prefix(argv[1], "/dev/pts/") ||
+    if (argc != 4 || !g_str_has_prefix(argv[1], "/dev/pts/") ||
         !argv[1][9] || strspn(argv[1] + 9, "0123456789") != strlen(argv[1] + 9)) {
-        g_printerr("Usage: %s /dev/pts/NUMBER SCENARIO\n", argv[0]);
+        g_printerr("Usage: %s /dev/pts/NUMBER SCENARIO HISTORY_DIRECTORY\n", argv[0]);
         return 2;
     }
     Probe probe = {.loop = g_main_loop_new(NULL, FALSE)};
     JptClient *client = jpt_client_new(NULL, NULL);
+    gboolean bad_history = g_str_equal(argv[2], "history-error");
+    jpt_client_set_alarm_directory(client, argv[3]);
     JptSerialConfig config = {.baud_rate = 57600, .data_bits = 8, .stop_bits = 1};
     jpt_client_connect_serial_async(client, argv[1], &config, completed, &probe);
     wait_for(&probe, JPT_CLIENT_CONNECTION);
@@ -68,6 +78,11 @@ int main(int argc, char **argv)
     g_assert_true(probe.result.telemetry.sensor_2_fault);
     g_assert_cmpfloat(ABS(probe.result.telemetry.sensor_1_celsius - 25.1), <, 0.001);
     g_assert_cmpuint(probe.result.telemetry.alarm_counts[4], ==, 1);
+    g_assert_cmpint(probe.history_error, ==, bad_history);
+    g_assert_cmpuint(probe.history_count, ==, bad_history ? 0 : 1);
+    if (!bad_history) {
+        g_assert_cmpuint(probe.history_raised, ==, 0x10);
+    }
 
     jpt_client_read_async(client, JPT_CMD_READ_ALARM_CACHE, completed, &probe);
     wait_for(&probe, JPT_CLIENT_EXCHANGE);
@@ -86,6 +101,7 @@ int main(int argc, char **argv)
     wait_for(&probe, JPT_CLIENT_TELEMETRY);
     g_assert_no_error(probe.error);
     g_assert_cmpuint(probe.result.telemetry.real_frequency, ==, 137);
+    g_assert_cmpuint(probe.history_count, ==, 0);
     g_assert_cmpuint(probe.result.telemetry.lock_frequency, ==, 100);
     g_assert_cmpstr(probe.result.telemetry.serial_number, ==, "AIAJP0248999");
 
@@ -108,7 +124,7 @@ int main(int argc, char **argv)
 
     jpt_client_safe_disconnect_async(client, completed, &probe);
     wait_for(&probe, JPT_CLIENT_DISCONNECTED);
-    if (g_str_equal(argv[2], "normal") || g_str_equal(argv[2], "empty-cache")) {
+    if (g_str_equal(argv[2], "normal") || g_str_equal(argv[2], "empty-cache") || bad_history) {
         g_assert_no_error(probe.error);
         g_assert_false(probe.result.connected);
         jpt_client_read_async(client, JPT_CMD_STATUS, completed, &probe);

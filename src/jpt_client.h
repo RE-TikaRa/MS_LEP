@@ -1,5 +1,6 @@
 #pragma once
 
+#include "jpt_alarm_history.h"
 #include "jpt_device.h"
 #include "jpt_transport.h"
 
@@ -21,6 +22,8 @@ typedef struct {
     JptTelemetry telemetry;
     JptExchange *exchange;
     GError *error;
+    GArray *alarm_events;
+    GError *history_error;
 } JptClientResult;
 
 typedef void (*JptClientCallback)(const JptClientResult *result, gpointer user_data);
@@ -28,6 +31,7 @@ typedef void (*JptTraceCallback)(guint16 command, GBytes *transmitted, GBytes *r
                                  const GError *error, gpointer user_data);
 
 JptClient *jpt_client_new(JptTraceCallback trace_callback, gpointer trace_data);
+void jpt_client_set_alarm_directory(JptClient *client, const gchar *directory);
 void jpt_client_connect_serial_async(JptClient *client, const gchar *path,
                                      const JptSerialConfig *config,
                                      JptClientCallback callback, gpointer user_data);

@@ -27,6 +27,8 @@ ctest --output-on-failure
 
 报警缓存的长帧格式、采样单位和原厂资料出处见[报警记录与回放](docs/alarm-replay.md)。
 
+`jpt_client_set_alarm_directory` 可启用本机报警历史。连接后按设备序列号载入，成功的轮询会在 `JptClientResult.alarm_events` 中返回新发生的报警；数组仅在回调期间有效。存储错误通过单独的 `history_error` 返回，不改变通信结果。未指定目录的客户端不写文件。
+
 ## 虚拟串口
 
 在 Linux 仓库根目录运行 `python3 tools/virtual_device.py`，终端会打印一个新建的 `/dev/pts/N`。保持进程运行，在 GTK 客户端选择“手动输入设备路径”，填入打印的路径即可。按 Ctrl+C 结束。模拟器不打开 `/dev/tty*`，不转发请求；重启会重置状态。
