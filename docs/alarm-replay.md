@@ -31,6 +31,14 @@
 
 未知类型保留类型码、分类码和两组附加原值。显示层不为未知量推定单位。
 
+## 本机报警历史
+
+GTK 客户端在 `$XDG_DATA_HOME/ms-lep/alarms/` 保存本机记录。未设置该变量时位于 `~/.local/share/ms-lep/alarms/`。文件名按设备 SN 编码。每行是 UTC 采集时间和四位十六进制报警状态字，以制表符分隔；历史页面按本地时区显示。
+
+只有状态发生变化才追加一行，恢复状态也会保存。界面逐项列出相邻采样中从 0 变为 1 的报警位；首次连接时已存在的报警也会记录。保持同一报警状态重新连接会载入已有历史，不重复生成事件。两个客户端访问同一 SN 时会同步已追加的记录。无法确认的损坏或截断文件不会被覆盖，记录错误与设备通信错误单独显示。
+
+时间来自上位机读到状态的时刻。断开连接期间发生、又在重连前恢复的报警，不能从轮询历史还原。本机状态日志与原厂 Windows CSV 是不同格式。
+
 ## 资料依据
 
 - `LaserGUI-202607071/JPTLaserGUI.exe`：`SerialPortBaics.CheckReceiveDataComplete` 针对缓存使用两字节长度。`CommMessageInstance.SendMessage_AlarmCache` 向 `CommDataAnalysis.GetCustomAlarmCacheList` 传入整帧，因此原厂的索引 5 指整帧中的记录数，不是解帧后的载荷索引。
