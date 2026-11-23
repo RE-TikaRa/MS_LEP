@@ -1312,8 +1312,9 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
             gtk_spin_button_set_value(console->red_power_spin, result->telemetry.red_light_power);
             gtk_spin_button_set_value(console->frequency_spin, result->telemetry.real_frequency);
             gtk_spin_button_set_value(console->pulse_spin, result->telemetry.real_pulse_width);
+            gtk_spin_button_set_value(console->simmer_spin, result->telemetry.default_simmer);
             console->updating_controls = TRUE;
-            const guint parameter_bits[] = {0, 1, 3, 4, 5, 6};
+            const guint parameter_bits[] = {0, 1, 2, 3, 4, 5};
             for (guint i = 0; i < G_N_ELEMENTS(console->parameter_options); i++) {
                 gtk_toggle_button_set_active(console->parameter_options[i],
                                             (result->telemetry.parameter_select & (1u << parameter_bits[i])) != 0);
@@ -1486,7 +1487,18 @@ static void clear_log_clicked(GtkButton *button, gpointer user_data)
 
 static void write_result_callback(const JptClientResult *result, gpointer user_data)
 {
-    result_callback(result, user_data);
+    LaserConsole *console = user_data;
+    result_callback(result, console);
+    if (result->error == NULL && result->exchange != NULL &&
+        result->exchange->frame->command == JPT_CMD_SIMMER) {
+        guint16 value = 0;
+        if (jpt_device_decode_u16(result->exchange->frame, &value, NULL)) {
+            console->updating_controls = TRUE;
+            gtk_spin_button_set_value(console->simmer_spin, value);
+            gtk_spin_button_set_value(console->default_simmer_spin, value);
+            console->updating_controls = FALSE;
+        }
+    }
 }
 
 static gboolean raw_request_from_ui(LaserConsole *console, gboolean write, GBytes **payload,
@@ -2046,7 +2058,7 @@ static GtkWidget *build_control_page(LaserConsole *console)
     GtkBox *parameter_group = make_group("实时参数写入");
     console->power_spin = make_spin(0, 100, 1, 0);
     console->frequency_spin = make_spin(1, 4000, 1, 100);
-    console->pulse_spin = make_spin(2, 500, 1, 20);
+    console->pulse_spin = make_spin(1, 500, 1, 20);
     console->simmer_spin = make_spin(0, 1000, 1, 0);
     add_spin_setting(GTK_WIDGET(parameter_group), "功率 (%)", console->power_spin,
                      JPT_CMD_POWER, 4, console);
@@ -2181,7 +2193,7 @@ static GtkWidget *build_settings_page(LaserConsole *console)
     const gchar *parameter_names[] = {
         "Pin9 功率锁存", "Pin23 急停", "外部频率", "风扇调速", "红光模式", "增强模式"
     };
-    const guint parameter_bits[] = {0, 1, 3, 4, 5, 6};
+    const guint parameter_bits[] = {0, 1, 2, 3, 4, 5};
     for (guint i = 0; i < G_N_ELEMENTS(parameter_names); i++) {
         console->parameter_options[i] = add_mask_option(GTK_WIDGET(parameter_group), parameter_names[i],
                                                         JPT_CMD_PARAMETER_SELECT, parameter_bits[i], 0,
