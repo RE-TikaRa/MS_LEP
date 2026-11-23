@@ -7,6 +7,7 @@ G_BEGIN_DECLS
 #define JPT_FRAME_START 0x24
 #define JPT_FRAME_END 0x2A
 #define JPT_DEVICE_ERROR 0x45
+#define JPT_CMD_READ_ALARM_CACHE 0x0093
 
 typedef enum {
     JPT_PROTOCOL_ERROR_INVALID_FRAME,
@@ -27,6 +28,7 @@ typedef struct {
 
 GQuark jpt_protocol_error_quark(void);
 GBytes *jpt_frame_encode(guint16 command, const guint8 *payload, gsize payload_length, GError **error);
+guint jpt_reply_header(const guint8 *data, gsize length, guint16 *command, guint16 *payload_length);
 JptFrame *jpt_frame_new(guint16 command, const guint8 *payload, gsize payload_length);
 void jpt_frame_free(JptFrame *frame);
 gboolean jpt_frame_read_u16(const JptFrame *frame, gsize offset, guint16 *value, GError **error);

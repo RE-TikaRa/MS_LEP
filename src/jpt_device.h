@@ -52,7 +52,6 @@ enum {
     JPT_CMD_READ_PREFERRED_MODE = 0x28,
     JPT_CMD_READ_ALARM_SHIELD = 0x41,
     JPT_CMD_READ_CUTOFF_FREQUENCY = 0x43,
-    JPT_CMD_READ_ALARM_CACHE = 0x93,
     JPT_CMD_READ_SYSTEM_PARAMETER_STATE = 0x95,
     JPT_CMD_READ_ALARM_CACHE_ENABLE = 0x96,
     JPT_CMD_WRITE_MACHINE_TYPE = 0x9B,
@@ -120,6 +119,15 @@ typedef struct {
 
 enum { JPT_M7_CUTOFF_COUNT = 11, JPT_ALARM_SAMPLE_COUNT = 10 };
 
+typedef enum {
+    JPT_CACHE_SENSOR_1, JPT_CACHE_SENSOR_2, JPT_CACHE_TEC, JPT_CACHE_NO_SEED,
+    JPT_CACHE_LOW_CURRENT, JPT_CACHE_SUPPLY_VOLTAGE
+} JptCacheAlarmType;
+
+typedef enum {
+    JPT_EXTRA_ABSENT, JPT_EXTRA_TEMPERATURE, JPT_EXTRA_TEC, JPT_EXTRA_VOLTAGE, JPT_EXTRA_RAW
+} JptAlarmExtra;
+
 typedef struct {
     guint8 type;
     guint8 category;
@@ -141,6 +149,8 @@ gboolean jpt_device_decode_info(const JptFrame *frame, JptDeviceInfo *info, GErr
 gboolean jpt_device_decode_m7_cutoffs(const JptFrame *frame, guint16 values[JPT_M7_CUTOFF_COUNT], GError **error);
 GBytes *jpt_device_m7_cutoff_payload(const guint16 values[JPT_M7_CUTOFF_COUNT]);
 GArray *jpt_device_decode_alarm_cache(const JptFrame *frame, GError **error);
+JptAlarmExtra jpt_alarm_extra_kind(guint8 type, guint channel);
+gdouble jpt_alarm_extra_value(JptAlarmExtra kind, guint16 raw);
 gboolean jpt_device_power_from_percent(guint percent, guint16 *raw);
 gdouble jpt_device_power_to_percent(guint16 raw);
 void jpt_device_decode_status(guint16 status, JptTelemetry *telemetry);

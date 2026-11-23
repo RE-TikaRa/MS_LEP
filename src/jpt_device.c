@@ -206,15 +206,15 @@ GArray *jpt_device_decode_alarm_cache(const JptFrame *frame, GError **error)
 {
     gsize length;
     const guint8 *data = g_bytes_get_data(frame->payload, &length);
-    if (frame->command != JPT_CMD_READ_ALARM_CACHE || length < 6 || length != 6u + data[5] * 108u) {
+    guint count = length ? data[0] : 0;
+    if (frame->command != JPT_CMD_READ_ALARM_CACHE || (length && length != 1u + count * 108u)) {
         g_set_error_literal(error, jpt_protocol_error_quark(), JPT_PROTOCOL_ERROR_INVALID_PAYLOAD,
                             "Invalid alarm cache record count or payload length");
         return NULL;
     }
-    guint count = data[5];
     GArray *records = g_array_sized_new(FALSE, FALSE, sizeof(JptAlarmRecord), count);
     for (guint index = 0; index < count; index++) {
-        const guint8 *record = data + 6 + index * 108;
+        const guint8 *record = data + 1 + index * 108;
         JptAlarmRecord item = {.type = record[0], .category = record[1],
                                .powered_minutes = read_minutes(record + 102),
                                .emission_minutes = read_minutes(record + 105)};
@@ -227,4 +227,36 @@ GArray *jpt_device_decode_alarm_cache(const JptFrame *frame, GError **error)
         g_array_append_val(records, item);
     }
     return records;
+}
+
+JptAlarmExtra jpt_alarm_extra_kind(guint8 type, guint channel)
+{
+    g_return_val_if_fail(channel < 2, JPT_EXTRA_ABSENT);
+    switch (type) {
+    case JPT_CACHE_SENSOR_1:
+    case JPT_CACHE_SENSOR_2:
+        return channel == 0 ? JPT_EXTRA_TEMPERATURE : JPT_EXTRA_ABSENT;
+    case JPT_CACHE_TEC:
+        return channel == 0 ? JPT_EXTRA_TEC : JPT_EXTRA_TEMPERATURE;
+    case JPT_CACHE_NO_SEED:
+    case JPT_CACHE_LOW_CURRENT:
+    case JPT_CACHE_SUPPLY_VOLTAGE:
+        return channel == 0 ? JPT_EXTRA_VOLTAGE : JPT_EXTRA_ABSENT;
+    default:
+        return JPT_EXTRA_RAW;
+    }
+}
+
+gdouble jpt_alarm_extra_value(JptAlarmExtra kind, guint16 raw)
+{
+    switch (kind) {
+    case JPT_EXTRA_TEMPERATURE:
+        return (raw - 200) / 10.0;
+    case JPT_EXTRA_TEC:
+        return raw / 10.0;
+    case JPT_EXTRA_VOLTAGE:
+        return raw / 100.0;
+    default:
+        return raw;
+    }
 }
