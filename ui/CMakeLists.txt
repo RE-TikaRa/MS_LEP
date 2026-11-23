@@ -12,9 +12,16 @@ add_custom_command(OUTPUT "${resource}"
     DEPENDS data/ms_lep.gresource.xml data/laser-device.png
     VERBATIM
 )
-add_executable(ms_lep main.c laser_console.c "${resource}")
+add_executable(ms_lep main.c laser_console.c alarm_replay.c "${resource}")
 target_link_libraries(ms_lep PRIVATE ms_lep_core PkgConfig::DESKTOP)
 target_compile_definitions(ms_lep PRIVATE MS_LEP_VERSION="${PROJECT_VERSION}")
 set_target_properties(ms_lep PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}")
 install(TARGETS ms_lep RUNTIME DESTINATION bin)
 install(FILES "${resource}" DESTINATION bin)
+
+if(BUILD_TESTING)
+    add_executable(ms_lep_replay_test test_alarm_replay.c alarm_replay.c)
+    target_link_libraries(ms_lep_replay_test PRIVATE ms_lep_core PkgConfig::DESKTOP)
+    add_test(NAME alarm_replay COMMAND ms_lep_replay_test)
+    set_tests_properties(alarm_replay PROPERTIES SKIP_RETURN_CODE 77)
+endif()

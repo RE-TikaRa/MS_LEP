@@ -1,5 +1,7 @@
 #include "laser_console.h"
 
+#include "alarm_replay.h"
+
 #include "jpt_client.h"
 
 #include <stdio.h>
@@ -15,6 +17,7 @@ typedef struct {
 } ProtocolCommand;
 
 static gboolean poll_tick(gpointer user_data);
+static void extension_set_status(LaserConsole *console, const gchar *text);
 static AdwPreferencesGroup *make_group(const gchar *title);
 static void send_u16(LaserConsole *console, guint16 command, guint16 value);
 static void navigation_row_activated(GtkListBox *list, GtkListBoxRow *row, gpointer user_data);
@@ -122,7 +125,8 @@ struct _LaserConsole {
     GtkTextBuffer *log_buffer;
     GtkTextBuffer *alarm_history_buffer;
     GtkStack *alarm_history_stack;
-    GtkTextBuffer *alarm_cache_buffer;
+    GtkWidget *alarm_replay;
+    gboolean alarm_cache_pending;
     GtkLabel *extension_status_label;
     GtkButton *m7_cutoff_read_button;
     GtkButton *m7_cutoff_write_button;
@@ -998,7 +1002,7 @@ static void update_output_buttons(LaserConsole *console)
         gtk_widget_set_sensitive(GTK_WIDGET(console->m7_cutoff_write_button),
                                  ready && console->protocol_ack != NULL &&
                                  gtk_check_button_get_active(console->protocol_ack));
-        gtk_widget_set_sensitive(GTK_WIDGET(console->alarm_cache_refresh_button), ready);
+        gtk_widget_set_sensitive(GTK_WIDGET(console->alarm_cache_refresh_button), ready && !console->alarm_cache_pending);
     }
     if (console->free_mode != NULL) {
         gtk_widget_set_sensitive(GTK_WIDGET(console->free_mode), ready);
@@ -1182,6 +1186,9 @@ static void result_callback(const JptClientResult *result, gpointer user_data)
         if (result->connected) {
             console->connected = TRUE;
             console->command_error_active = FALSE;
+            console->alarm_cache_pending = FALSE;
+            alarm_replay_set(console->alarm_replay, NULL, "尚未读取报警缓存");
+            extension_set_status(console, "");
             gtk_label_set_text(console->priority_label, "未读取");
             gtk_widget_set_sensitive(console->priority_read_button, TRUE);
             set_last_error(console, NULL);
@@ -1657,48 +1664,32 @@ static void m7_cutoff_write_clicked(GtkButton *button, gpointer user_data)
 static void alarm_cache_result_callback(const JptClientResult *result, gpointer user_data)
 {
     LaserConsole *console = user_data;
+    if (console->closing) {
+        return;
+    }
+    console->alarm_cache_pending = FALSE;
     result_callback(result, console);
-    if (result->error != NULL || result->exchange == NULL) {
-        extension_set_status(console, result->error ? result->error->message : "设备未返回报警缓存");
+    update_output_buttons(console);
+    if (!console->connected || console->shutdown_in_progress) {
         return;
     }
     GError *error = NULL;
-    GArray *records = jpt_device_decode_alarm_cache(result->exchange->frame, &error);
-    if (records == NULL) {
-        extension_set_status(console, error->message);
-        g_clear_error(&error);
-        return;
-    }
-    GString *text = g_string_new(NULL);
-    for (guint index = 0; index < records->len; index++) {
-        const JptAlarmRecord *record = &g_array_index(records, JptAlarmRecord, index);
-        g_string_append_printf(text,
-                               "记录 %u · 类型 %u · 分类 %u · 上电时间 %u min · 出光时间 %u min\n",
-                               index + 1, record->type, record->category,
-                               record->powered_minutes, record->emission_minutes);
-        const gchar *labels[] = {"功率", "频率", "脉宽", "附加量 1", "附加量 2"};
-        const guint16 *series[] = {record->power, record->frequency, record->pulse_width,
-                                   record->extra[0], record->extra[1]};
-        for (guint channel = 0; channel < G_N_ELEMENTS(series); channel++) {
-            g_string_append_printf(text, "  %s:", labels[channel]);
-            for (guint sample = 0; sample < JPT_ALARM_SAMPLE_COUNT; sample++) {
-                g_string_append_printf(text, " %u", series[channel][sample]);
-            }
-            g_string_append_c(text, '\n');
-        }
-    }
-    gtk_text_buffer_set_text(console->alarm_cache_buffer,
-                             records->len ? text->str : "设备没有报警缓存记录。", -1);
-    extension_set_status(console, records->len ? "报警缓存已读取" : "报警缓存为空");
-    g_array_unref(records);
-    g_string_free(text, TRUE);
+    GArray *records = result->exchange ? jpt_device_decode_alarm_cache(result->exchange->frame, &error) : NULL;
+    const GError *failure = result->error ? result->error : error;
+    const gchar *message = failure ? failure->message : records ? NULL : "设备未返回报警缓存";
+    alarm_replay_set(console->alarm_replay, records, message);
+    extension_set_status(console, message ? "报警缓存读取失败" : records->len ? "报警缓存已读取" : "报警缓存为空");
+    g_clear_pointer(&records, g_array_unref);
+    g_clear_error(&error);
 }
 
 static void alarm_cache_refresh_clicked(GtkButton *button, gpointer user_data)
 {
-    (void)button;
     LaserConsole *console = user_data;
-    extension_set_status(console, "正在读取报警缓存…");
+    console->alarm_cache_pending = TRUE;
+    gtk_widget_set_sensitive(GTK_WIDGET(button), FALSE);
+    alarm_replay_set(console->alarm_replay, NULL, "正在读取报警缓存…");
+    extension_set_status(console, "");
     jpt_client_read_async(console->client, JPT_CMD_READ_ALARM_CACHE,
                           alarm_cache_result_callback, console);
 }
@@ -2611,14 +2602,8 @@ static GtkWidget *build_extension_page(LaserConsole *console)
                      G_CALLBACK(alarm_cache_refresh_clicked), console);
     adw_preferences_group_set_header_suffix(cache_group,
                                              GTK_WIDGET(console->alarm_cache_refresh_button));
-    GtkWidget *cache_view = gtk_text_view_new_with_buffer(console->alarm_cache_buffer);
-    gtk_text_view_set_editable(GTK_TEXT_VIEW(cache_view), FALSE);
-    gtk_text_view_set_monospace(GTK_TEXT_VIEW(cache_view), TRUE);
-    gtk_text_view_set_wrap_mode(GTK_TEXT_VIEW(cache_view), GTK_WRAP_WORD_CHAR);
-    GtkWidget *cache_scroll = gtk_scrolled_window_new();
-    gtk_widget_set_size_request(cache_scroll, -1, 220);
-    gtk_scrolled_window_set_child(GTK_SCROLLED_WINDOW(cache_scroll), cache_view);
-    adw_preferences_group_add(cache_group, cache_scroll);
+    console->alarm_replay = alarm_replay_new();
+    adw_preferences_group_add(cache_group, console->alarm_replay);
     console->extension_status_label = GTK_LABEL(gtk_label_new(""));
     gtk_widget_add_css_class(GTK_WIDGET(console->extension_status_label), "dim-label");
     adw_preferences_group_add(cache_group, GTK_WIDGET(console->extension_status_label));
@@ -2956,7 +2941,6 @@ GtkWidget *laser_console_create(AdwApplication *application)
     GtkWidget *protocol_page = build_protocol_page(console);
     console->alarm_history_buffer = gtk_text_buffer_new(NULL);
     GtkWidget *alarm_history_page = build_alarm_history_page(console);
-    console->alarm_cache_buffer = gtk_text_buffer_new(NULL);
     GtkWidget *extension_page = build_extension_page(console);
     adw_view_stack_add_titled_with_icon(console->view_stack, control_page,
                                         "control", "控制台", "preferences-system-symbolic");
